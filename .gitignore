@@ -12,6 +12,11 @@ ENV/
 # Raw scraped data
 /data/
 
+# Local application database
+*.db
+*.db-shm
+*.db-wal
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -20,6 +25,10 @@ __pycache__/
 .eggs/
 build/
 dist/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
 
 # Playwright
 playwright-report/

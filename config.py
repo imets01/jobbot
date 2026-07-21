@@ -25,6 +25,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # Directory where raw scraped job JSON files are stored. Git-ignored.
 DATA_DIR = BASE_DIR / "data"
 
+# Local-first SQLite database used by the web application.
+DATABASE_PATH = Path(os.getenv("JOBBOT_DATABASE_PATH", BASE_DIR / "jobbot.db"))
+DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+
 # --- Secrets ---------------------------------------------------------------
 
 # Google Gemini API key, read from the environment. Never hard-code this.

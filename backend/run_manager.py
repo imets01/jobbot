@@ -1,0 +1,244 @@
+"""Single-process background run coordinator for scraping and Gemini analysis."""
+
+from __future__ import annotations
+
+import threading
+import time
+import traceback
+import uuid
+from typing import Any
+
+from sqlalchemy import select
+
+import config
+from analyzer import analyze_job, build_client
+from backend.database import SessionLocal, session_scope
+from backend.models import AnalysisResult, AnalysisRun, Job, utc_now
+from backend.repository import (
+    active_run,
+    create_run,
+    get_or_create_profile,
+    import_json_files,
+    jobs_needing_analysis,
+)
+from scraper import scrape_jobs
+
+
+class RunConflictError(RuntimeError):
+    """Raised when a second pipeline is requested while one is active."""
+
+
+class RunManager:
+    """Run scraper/analyzer work in one guarded background thread.
+
+    The application is intentionally local-first and should be started with one
+    Uvicorn worker. The database still records every transition, while the
+    in-process lock prevents accidental duplicate runs from repeated UI clicks.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active_run_id: str | None = None
+
+    def recover_stale_runs(self) -> None:
+        """Mark interrupted pending/running runs as failed after a restart."""
+        with session_scope() as session:
+            runs = list(
+                session.scalars(
+                    select(AnalysisRun).where(
+                        AnalysisRun.status.in_(("pending", "running"))
+                    )
+                )
+            )
+            for run in runs:
+                run.status = "failed"
+                run.ended_at = utc_now()
+                run.error_details = "Application restarted before this run completed."
+
+    def start(
+        self,
+        run_type: str,
+        parameters: dict[str, Any],
+        *,
+        job_id: int | None = None,
+    ) -> AnalysisRun:
+        """Create and launch a run, rejecting concurrent duplicate work."""
+        with self._lock:
+            with session_scope() as session:
+                running = active_run(session)
+                if self._active_run_id or running:
+                    active_id = self._active_run_id or (running.id if running else "unknown")
+                    raise RunConflictError(
+                        f"Run {active_id} is already pending or running."
+                    )
+                run_id = str(uuid.uuid4())
+                payload = dict(parameters)
+                if job_id is not None:
+                    payload["job_id"] = job_id
+                run = create_run(session, run_id, run_type, payload)
+                self._active_run_id = run_id
+
+            thread = threading.Thread(
+                target=self._execute,
+                args=(run_id, run_type, payload),
+                name=f"jobbot-{run_type}-{run_id[:8]}",
+                daemon=True,
+            )
+            thread.start()
+            return run
+
+    def _execute(
+        self,
+        run_id: str,
+        run_type: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        self._update_run(
+            run_id,
+            status="running",
+            started_at=utc_now(),
+            error_details=None,
+        )
+        try:
+            if run_type == "scraper":
+                self._scrape(run_id, parameters)
+            elif run_type == "analyzer":
+                requested_job_id = parameters.get("job_id")
+                self._analyze(
+                    run_id,
+                    job_ids=[int(requested_job_id)] if requested_job_id else None,
+                    force=bool(requested_job_id),
+                )
+            elif run_type == "full":
+                job_ids = self._scrape(run_id, parameters)
+                self._analyze(run_id, job_ids=job_ids, force=False)
+            else:
+                raise ValueError(f"Unsupported run type: {run_type}")
+
+            self._update_run(run_id, status="completed", ended_at=utc_now())
+        except Exception as exc:  # noqa: BLE001 - persist background failures
+            details = f"{type(exc).__name__}: {exc}"
+            self._update_run(
+                run_id,
+                status="failed",
+                ended_at=utc_now(),
+                error_details=details[:20_000],
+            )
+            traceback.print_exc()
+        finally:
+            with self._lock:
+                if self._active_run_id == run_id:
+                    self._active_run_id = None
+
+    def _scrape(self, run_id: str, parameters: dict[str, Any]) -> list[int]:
+        paths = scrape_jobs(
+            role=str(parameters.get("role") or config.DEFAULT_ROLE),
+            location=str(parameters.get("location") or config.DEFAULT_LOCATION),
+            max_jobs=int(parameters.get("max_jobs") or config.MAX_JOBS),
+        )
+        with session_scope() as session:
+            stats = import_json_files(session, paths)
+            run = session.get(AnalysisRun, run_id)
+            if run is None:
+                raise RuntimeError(f"Run {run_id} disappeared")
+            run.jobs_discovered = len(stats.job_ids)
+            run.failures += stats.files_failed
+            return list(stats.job_ids)
+
+    def _analyze(
+        self,
+        run_id: str,
+        *,
+        job_ids: list[int] | None,
+        force: bool,
+    ) -> None:
+        with session_scope() as session:
+            profile = get_or_create_profile(session)
+            profile_snapshot = profile.content
+            profile_version = profile.version
+            if force and job_ids:
+                jobs = list(
+                    session.scalars(
+                        select(Job)
+                        .where(Job.id.in_(job_ids), Job.archived.is_(False))
+                        .order_by(Job.last_seen.desc())
+                    )
+                )
+            else:
+                jobs = jobs_needing_analysis(
+                    session,
+                    profile_snapshot,
+                    job_ids=job_ids,
+                )
+            payloads = [
+                {
+                    "id": job.id,
+                    "title": job.title,
+                    "company": job.company,
+                    "link": job.url,
+                    "description": job.description,
+                    "location": job.location,
+                }
+                for job in jobs
+            ]
+            run = session.get(AnalysisRun, run_id)
+            if run is None:
+                raise RuntimeError(f"Run {run_id} disappeared")
+            run.jobs_queued = len(payloads)
+
+        if not payloads:
+            return
+
+        client = build_client()
+        for index, payload in enumerate(payloads):
+            if index > 0 and config.ANALYZER_DELAY_SECONDS > 0:
+                time.sleep(config.ANALYZER_DELAY_SECONDS)
+
+            evaluation: dict[str, Any] | None = None
+            error_message: str | None = None
+            try:
+                evaluation = analyze_job(
+                    client,
+                    payload,
+                    candidate_profile=profile_snapshot,
+                )
+            except Exception as exc:  # noqa: BLE001 - persist per-job API errors
+                error_message = f"{type(exc).__name__}: {exc}"[:20_000]
+
+            with session_scope() as session:
+                result = AnalysisResult(
+                    job_id=int(payload["id"]),
+                    run_id=run_id,
+                    candidate_profile_snapshot=profile_snapshot,
+                    candidate_profile_version=profile_version,
+                    is_good_match=(
+                        bool(evaluation["is_good_match"]) if evaluation else None
+                    ),
+                    seniority_ok=(
+                        bool(evaluation["seniority_ok"]) if evaluation else None
+                    ),
+                    verdict=str(evaluation["verdict"]) if evaluation else "",
+                    gemini_model=config.GEMINI_MODEL,
+                    error_message=error_message,
+                )
+                session.add(result)
+                run = session.get(AnalysisRun, run_id)
+                if run is None:
+                    raise RuntimeError(f"Run {run_id} disappeared")
+                run.jobs_analyzed += 1
+                if error_message:
+                    run.failures += 1
+                elif evaluation and evaluation["is_good_match"] and evaluation["seniority_ok"]:
+                    run.good_matches += 1
+
+    @staticmethod
+    def _update_run(run_id: str, **values: Any) -> None:
+        with session_scope() as session:
+            run = session.get(AnalysisRun, run_id)
+            if run is None:
+                raise RuntimeError(f"Run {run_id} not found")
+            for key, value in values.items():
+                setattr(run, key, value)
+
+
+run_manager = RunManager()

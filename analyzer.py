@@ -112,7 +112,7 @@ Job description:
 """
 
 
-def _build_client() -> genai.Client:
+def build_client() -> genai.Client:
     """Create a Gemini client, validating that the API key is present."""
     if not config.GEMINI_API_KEY:
         raise RuntimeError(
@@ -120,6 +120,10 @@ def _build_client() -> genai.Client:
             "your key."
         )
     return genai.Client(api_key=config.GEMINI_API_KEY)
+
+
+# Backwards-compatible alias for existing callers.
+_build_client = build_client
 
 
 def _load_jobs(paths: list[Path]) -> list[tuple[Path, dict]]:
@@ -150,13 +154,17 @@ def _parse_structured_response(raw_text: str) -> dict:
         raise
 
 
-def analyze_job(client: genai.Client, job: dict) -> dict:
+def analyze_job(
+    client: genai.Client,
+    job: dict,
+    candidate_profile: str = CANDIDATE_PROFILE,
+) -> dict:
     """Send one job to Gemini and return the structured evaluation.
 
     Retries with exponential backoff on transient rate-limit (429) errors.
     """
     prompt = USER_PROMPT_TEMPLATE.format(
-        profile=CANDIDATE_PROFILE,
+        profile=candidate_profile,
         title=job.get("title", "Unknown"),
         company=job.get("company", "Unknown"),
         description=job.get("description", "") or "(no description available)",
@@ -206,6 +214,7 @@ def analyze_job(client: genai.Client, job: dict) -> dict:
 def analyze_all(
     data_dir: Path | None = None,
     job_paths: list[Path] | None = None,
+    candidate_profile: str = CANDIDATE_PROFILE,
 ) -> list[dict]:
     """Analyze selected jobs, or every job in the data directory.
 
@@ -231,7 +240,11 @@ def analyze_all(
             time.sleep(config.ANALYZER_DELAY_SECONDS)
 
         try:
-            evaluation = analyze_job(client, job)
+            evaluation = analyze_job(
+                client,
+                job,
+                candidate_profile=candidate_profile,
+            )
         except Exception as exc:  # noqa: BLE001 - surface any API/parse error per job
             print(f"[analyzer] Failed to analyze {path.name}: {exc}")
             continue

@@ -4,7 +4,7 @@ main.py
 Entry point that orchestrates the pipeline:
 
     1. Scrape public LinkedIn job cards (scraper.py).
-    2. Analyze each scraped description with Claude (analyzer.py).
+    2. Analyze each scraped description with Gemini (analyzer.py).
 
 Search parameters can be provided via CLI flags; sensible defaults come from
 config.py.
@@ -28,7 +28,7 @@ from scraper import scrape_jobs
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Scrape public LinkedIn jobs and classify seniority with Claude."
+        description="Scrape public LinkedIn jobs and evaluate fit with Gemini."
     )
     parser.add_argument(
         "--role",
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scrape-only",
         action="store_true",
-        help="Only run the scraper; skip Claude analysis.",
+        help="Only run the scraper; skip Gemini analysis.",
     )
     parser.add_argument(
         "--analyze-only",
