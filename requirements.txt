@@ -1,0 +1,4 @@
+# Core dependencies for the LinkedIn job-scanning bot
+playwright>=1.44.0
+google-genai>=1.0.0
+python-dotenv>=1.0.0
