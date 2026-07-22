@@ -1,8 +1,8 @@
 # Jobbot
 
-A local-first job discovery and application workspace. Jobbot keeps the existing
-Playwright scraper and Gemini classifier, then adds a FastAPI API, SQLite history,
-and a polished React dashboard.
+A local-first job discovery and application workspace. Jobbot combines a
+structured candidate profile, private CV evidence, persisted search controls,
+0-100 Gemini match scoring, application tracking, and tailored cover letters.
 
 ## Architecture
 
@@ -14,7 +14,8 @@ scraper.py --> data/job_*.json --> idempotent importer --> SQLite
                                                         |
 React dashboard <--> FastAPI <--> run manager ----------+
                               |
-                              +--> analyzer.py --> Gemini
+                              +--> analyzer.py --> Gemini scoring
+                              +--> CV extraction + cover letters
 ```
 
 - **Existing pipeline**
@@ -22,15 +23,17 @@ React dashboard <--> FastAPI <--> run manager ----------+
   - `analyzer.py` remains the only Gemini evaluation implementation.
   - `main.py` remains available as the command-line pipeline.
 - **Backend** (`backend/`)
-  - FastAPI endpoints for jobs, profiles, runs, history, and applications.
+  - FastAPI endpoints for jobs, structured profiles, CVs, search controls,
+    runs, history, applications, and cover letters.
   - SQLite persistence in `jobbot.db` (ignored by Git).
   - Idempotent startup import of all `data/job_*.json` files.
   - URL-first job deduplication with deterministic content-hash fallback.
   - A guarded background run manager prevents concurrent duplicate runs.
 - **Frontend** (`frontend/`)
   - React, Vite, and TypeScript.
-  - Responsive dashboard, job filters/detail drawer, run history, Kanban-style
-    applications board, profile editor, and run controls.
+  - Search-first home wizard, ranked match results, secondary results dashboard,
+    score breakdowns, search history, Kanban-style applications board,
+    structured profile editor, CV upload, and editable cover letters.
   - The Gemini key is never included in the frontend bundle.
 
 ## Prerequisites
@@ -66,8 +69,50 @@ npm install
 Set-Location ..
 ```
 
-The `.env`, `.venv`, `data/`, `jobbot.db`, and frontend build/dependency folders
-are ignored by Git.
+The `.env`, `.venv`, `data/` (including uploaded CVs), `jobbot.db`, and frontend
+build/dependency folders are ignored by Git.
+
+## Structured workflow
+
+1. Open **Start a Search**. The home page guides the whole setup in three steps.
+2. Upload a PDF or DOCX CV. The original file and locally extracted raw text are
+  stored under `data/cv/` and never returned by the API.
+3. Select **Extract Profile from CV** to let Gemini populate supported structured
+  fields. Review the essential profile in step one; the full profile editor
+  remains available for education, experience, languages, and cover letters.
+4. In step two, set keywords, locations, work models, threshold, top-result
+  count, seniority/language/location exclusions, and source adapters.
+  Search keywords are the single source for target roles and are used for both
+  LinkedIn discovery and Gemini career-alignment scoring.
+5. Review the combined candidate and search setup in step three.
+6. Select **Start Job Search** once. There are no separate discovery, analyzer,
+  or full-pipeline actions in the web UI. Every search discovers normalized
+  jobs, scores each from 0-100,
+  applies deterministic hard filters, and shows only qualifying top matches.
+7. Open a match to inspect strengths, concerns, missing requirements, score
+  breakdown, resume keywords, and application strategy.
+8. Generate, edit, copy, or regenerate a grounded cover letter.
+
+After launch, the app opens the secondary **Results Dashboard** to show search
+progress, top matches, and application metrics. Search configuration remains the
+main home-page experience.
+
+The existing scraper currently connects **LinkedIn only**. Other requested
+sources appear in the capability registry as unavailable extension points; the
+UI does not pretend those adapters work. Add future adapters behind the same
+normalized job-import contract.
+
+### Match score interpretation
+
+- **90-100:** Excellent match
+- **75-89:** Strong match
+- **60-74:** Possible match
+- **Below 60:** Hidden by default
+
+The score covers title, skills, experience, location, work model, education,
+certifications, language requirements, career goals, cover-letter relevance,
+and critical requirements. The saved minimum threshold and hard exclusions make
+the final `qualifies` decision deterministic after Gemini returns its evidence.
 
 ## Run locally for development
 
@@ -129,9 +174,17 @@ raw JSON files. Importing repeatedly is safe:
 - URL-less jobs use a deterministic hash of title, company, location, and
   description.
 - Analysis results are append-only and retain their candidate-profile snapshot,
-  model, verdict, run, timestamp, and errors.
-- “Analyze new jobs” selects jobs without a successful analysis for the exact
-  currently saved candidate profile.
+  model, score, breakdown, strengths/gaps, run, timestamp, and errors.
+- A job search reuses a successful score only when the structured profile, CV
+  evidence hash, and search controls are exactly unchanged.
+- Raw CV text is stored separately and stays server-side. Analysis snapshots
+  include only a SHA-256 identity for the CV evidence, not its raw contents.
+- Generated cover letters are versioned by generation; edits update the selected
+  generated letter.
+
+Existing pre-upgrade binary verdicts remain in history but do not have a numeric
+score. The next end-to-end search scores the listings it discovers with the new
+structured model.
 
 To reset only local web state, stop the backend and delete `jobbot.db`. On the
 next startup the schema is recreated and current raw JSON files are reimported.
@@ -154,16 +207,19 @@ npm run build
 ```
 
 The test suite covers URL/content deduplication, idempotent JSON import,
-candidate-profile persistence/versioning, append-only analysis history, and
-application workflow updates.
+structured profile and control persistence, score thresholding, deterministic
+hard filters, DOCX text extraction, cover-letter persistence, append-only
+analysis history, and application workflow updates.
 
 ## Implementation assumptions
 
 - Jobbot is a single-user, local application and should run with one Uvicorn
-  worker. The in-process run lock prevents simultaneous scraper/analyzer jobs.
+  worker. The in-process run lock prevents simultaneous job searches.
 - SQLite is the source of truth for dashboard state; raw JSON remains a private,
   replayable scraper artifact.
 - The scraper uses public LinkedIn guest endpoints without authentication.
   LinkedIn can change or throttle these endpoints, so use the tool responsibly
   and review applicable terms.
 - Gemini requests are paced according to `ANALYZER_DELAY_SECONDS` in `config.py`.
+- Schema upgrades are additive SQLite bootstrap migrations because this local
+  project does not yet use Alembic.

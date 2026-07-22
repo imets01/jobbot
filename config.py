@@ -25,6 +25,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # Directory where raw scraped job JSON files are stored. Git-ignored.
 DATA_DIR = BASE_DIR / "data"
 
+# Uploaded CVs are private local artifacts stored below the ignored data folder.
+CV_DIR = DATA_DIR / "cv"
+MAX_CV_SIZE_BYTES = 10 * 1024 * 1024
+
 # Local-first SQLite database used by the web application.
 DATABASE_PATH = Path(os.getenv("JOBBOT_DATABASE_PATH", BASE_DIR / "jobbot.db"))
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
@@ -67,3 +71,9 @@ def ensure_data_dir() -> Path:
     """Create the data directory if it does not already exist and return it."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     return DATA_DIR
+
+
+def ensure_cv_dir() -> Path:
+    """Create the private CV storage directory and return it."""
+    CV_DIR.mkdir(parents=True, exist_ok=True)
+    return CV_DIR

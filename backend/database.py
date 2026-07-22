@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 import config
@@ -46,6 +46,57 @@ def init_database(bind: Engine = engine) -> None:
     from backend import models  # noqa: F401
 
     Base.metadata.create_all(bind)
+    _apply_sqlite_bootstrap_migrations(bind)
+
+
+def _apply_sqlite_bootstrap_migrations(bind: Engine) -> None:
+    """Add columns introduced after the first local schema release.
+
+    The app predates Alembic and is deliberately local-first. These additive,
+    idempotent migrations preserve existing SQLite data while new installations
+    receive the complete schema directly from SQLAlchemy metadata.
+    """
+    if bind.dialect.name != "sqlite":
+        return
+
+    additions = {
+        "jobs": {
+            "dismissed": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "candidate_profiles": {
+            "structured_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
+        "analysis_results": {
+            "match_score": "INTEGER",
+            "qualifies": "BOOLEAN",
+            "recommendation_label": "VARCHAR(40)",
+            "short_explanation": "TEXT NOT NULL DEFAULT ''",
+            "score_breakdown_json": "TEXT NOT NULL DEFAULT '{}'",
+            "matched_strengths_json": "TEXT NOT NULL DEFAULT '[]'",
+            "weak_areas_json": "TEXT NOT NULL DEFAULT '[]'",
+            "potential_concerns_json": "TEXT NOT NULL DEFAULT '[]'",
+            "missing_requirements_json": "TEXT NOT NULL DEFAULT '[]'",
+            "resume_keywords_json": "TEXT NOT NULL DEFAULT '[]'",
+            "application_strategy": "TEXT NOT NULL DEFAULT ''",
+            "work_model": "VARCHAR(30)",
+            "required_experience_years": "FLOAT",
+            "required_languages_json": "TEXT NOT NULL DEFAULT '[]'",
+            "critical_gaps_json": "TEXT NOT NULL DEFAULT '[]'",
+        },
+    }
+
+    inspector = inspect(bind)
+    table_names = set(inspector.get_table_names())
+    with bind.begin() as connection:
+        for table_name, columns in additions.items():
+            if table_name not in table_names:
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, definition in columns.items():
+                if column_name not in existing:
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {definition}'
+                    )
 
 
 @contextmanager

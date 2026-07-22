@@ -6,6 +6,8 @@ import threading
 import time
 import traceback
 import uuid
+import json
+import math
 from typing import Any
 
 from sqlalchemy import select
@@ -17,9 +19,18 @@ from backend.models import AnalysisResult, AnalysisRun, Job, utc_now
 from backend.repository import (
     active_run,
     create_run,
+    get_cv_document,
     get_or_create_profile,
+    get_or_create_search_settings,
+    get_structured_profile,
     import_json_files,
     jobs_needing_analysis,
+    search_settings_dict,
+)
+from backend.profile_service import (
+    build_analysis_context,
+    build_profile_snapshot,
+    profile_for_search,
 )
 from scraper import scrape_jobs
 
@@ -109,7 +120,7 @@ class RunManager:
                     job_ids=[int(requested_job_id)] if requested_job_id else None,
                     force=bool(requested_job_id),
                 )
-            elif run_type == "full":
+            elif run_type in {"search", "full"}:
                 job_ids = self._scrape(run_id, parameters)
                 self._analyze(run_id, job_ids=job_ids, force=False)
             else:
@@ -131,11 +142,39 @@ class RunManager:
                     self._active_run_id = None
 
     def _scrape(self, run_id: str, parameters: dict[str, Any]) -> list[int]:
-        paths = scrape_jobs(
-            role=str(parameters.get("role") or config.DEFAULT_ROLE),
-            location=str(parameters.get("location") or config.DEFAULT_LOCATION),
-            max_jobs=int(parameters.get("max_jobs") or config.MAX_JOBS),
-        )
+        controls = parameters.get("search_controls")
+        paths = []
+        if controls:
+            sources = {str(value).casefold() for value in controls.get("sources", [])}
+            if "linkedin" not in sources:
+                raise ValueError(
+                    "LinkedIn is the only search source currently connected. "
+                    "Select LinkedIn or add a source adapter."
+                )
+            keywords = [str(value) for value in controls.get("keywords", [])]
+            locations = [str(value) for value in controls.get("target_locations", [])]
+            if not keywords or not locations:
+                raise ValueError("At least one keyword and target location are required.")
+            role_query = " OR ".join(keywords)
+            discovery_budget = min(
+                100,
+                max(25, int(controls.get("number_of_jobs", config.MAX_JOBS)) * 3),
+            )
+            per_location = max(1, math.ceil(discovery_budget / len(locations)))
+            for location in locations:
+                paths.extend(
+                    scrape_jobs(
+                        role=role_query,
+                        location=location,
+                        max_jobs=per_location,
+                    )
+                )
+        else:
+            paths = scrape_jobs(
+                role=str(parameters.get("role") or config.DEFAULT_ROLE),
+                location=str(parameters.get("location") or config.DEFAULT_LOCATION),
+                max_jobs=int(parameters.get("max_jobs") or config.MAX_JOBS),
+            )
         with session_scope() as session:
             stats = import_json_files(session, paths)
             run = session.get(AnalysisRun, run_id)
@@ -154,7 +193,30 @@ class RunManager:
     ) -> None:
         with session_scope() as session:
             profile = get_or_create_profile(session)
-            profile_snapshot = profile.content
+            structured_profile = get_structured_profile(session)
+            stored_settings = get_or_create_search_settings(session)
+            settings = parameters_settings = None
+            run = session.get(AnalysisRun, run_id)
+            if run is not None:
+                try:
+                    run_parameters = json.loads(run.parameters_json or "{}")
+                    parameters_settings = run_parameters.get("search_controls")
+                except (json.JSONDecodeError, TypeError):
+                    parameters_settings = None
+            settings = parameters_settings or search_settings_dict(stored_settings)
+            structured_profile = profile_for_search(structured_profile, settings)
+            cv = get_cv_document(session)
+            raw_cv_text = cv.raw_text if cv else ""
+            profile_snapshot = build_profile_snapshot(
+                structured_profile,
+                settings,
+                raw_cv_text,
+            )
+            analysis_context = build_analysis_context(
+                structured_profile,
+                settings,
+                raw_cv_text,
+            )
             profile_version = profile.version
             if force and job_ids:
                 jobs = list(
@@ -200,12 +262,18 @@ class RunManager:
                 evaluation = analyze_job(
                     client,
                     payload,
-                    candidate_profile=profile_snapshot,
+                    candidate_profile=analysis_context,
                 )
+                evaluation["job_location"] = payload.get("location")
             except Exception as exc:  # noqa: BLE001 - persist per-job API errors
                 error_message = f"{type(exc).__name__}: {exc}"[:20_000]
 
             with session_scope() as session:
+                qualifies = (
+                    self._qualifies(evaluation, structured_profile, settings)
+                    if evaluation
+                    else None
+                )
                 result = AnalysisResult(
                     job_id=int(payload["id"]),
                     run_id=run_id,
@@ -220,6 +288,47 @@ class RunManager:
                     verdict=str(evaluation["verdict"]) if evaluation else "",
                     gemini_model=config.GEMINI_MODEL,
                     error_message=error_message,
+                    match_score=(int(evaluation["match_score"]) if evaluation else None),
+                    qualifies=qualifies,
+                    recommendation_label=(
+                        str(evaluation["recommendation_label"]) if evaluation else None
+                    ),
+                    short_explanation=(
+                        str(evaluation["short_explanation"]) if evaluation else ""
+                    ),
+                    score_breakdown_json=json.dumps(
+                        evaluation["score_breakdown"] if evaluation else {}
+                    ),
+                    matched_strengths_json=json.dumps(
+                        evaluation["matched_strengths"] if evaluation else []
+                    ),
+                    weak_areas_json=json.dumps(
+                        evaluation["weak_areas"] if evaluation else []
+                    ),
+                    potential_concerns_json=json.dumps(
+                        evaluation["potential_concerns"] if evaluation else []
+                    ),
+                    missing_requirements_json=json.dumps(
+                        evaluation["missing_requirements"] if evaluation else []
+                    ),
+                    resume_keywords_json=json.dumps(
+                        evaluation["suggested_resume_keywords"] if evaluation else []
+                    ),
+                    application_strategy=(
+                        str(evaluation["application_strategy"]) if evaluation else ""
+                    ),
+                    work_model=(str(evaluation["work_model"]) if evaluation else None),
+                    required_experience_years=(
+                        float(evaluation["required_experience_years"])
+                        if evaluation
+                        else None
+                    ),
+                    required_languages_json=json.dumps(
+                        evaluation["required_languages"] if evaluation else []
+                    ),
+                    critical_gaps_json=json.dumps(
+                        evaluation["critical_gaps"] if evaluation else []
+                    ),
                 )
                 session.add(result)
                 run = session.get(AnalysisRun, run_id)
@@ -228,8 +337,67 @@ class RunManager:
                 run.jobs_analyzed += 1
                 if error_message:
                     run.failures += 1
-                elif evaluation and evaluation["is_good_match"] and evaluation["seniority_ok"]:
+                elif qualifies:
                     run.good_matches += 1
+
+    @staticmethod
+    def _qualifies(
+        evaluation: dict[str, Any],
+        profile: dict[str, Any],
+        settings: dict[str, Any],
+    ) -> bool:
+        """Apply deterministic threshold and explicit hard-filter controls."""
+        if int(evaluation.get("match_score", 0)) < int(
+            settings.get("minimum_match_score", 60)
+        ):
+            return False
+        if not settings.get("include_stretch_roles", False):
+            if not evaluation.get("seniority_ok", False) or evaluation.get("critical_gaps"):
+                return False
+
+        maximum_years = settings.get("max_required_experience_years")
+        required_years = float(evaluation.get("required_experience_years", 0) or 0)
+        if maximum_years is not None and required_years > float(maximum_years):
+            return False
+
+        allowed_models = {
+            str(value).casefold() for value in settings.get("work_models", [])
+        }
+        work_model = str(evaluation.get("work_model") or "Unknown").casefold()
+        if allowed_models and work_model not in {"unknown", "flexible"}:
+            if work_model not in allowed_models:
+                return False
+
+        if settings.get("exclude_unavailable_languages"):
+            available = {
+                str(item.get("language", "")).casefold()
+                for item in profile.get("languages", [])
+                if isinstance(item, dict) and item.get("language")
+            }
+            required = {
+                str(value).casefold()
+                for value in evaluation.get("required_languages", [])
+            }
+            for requirement in required:
+                if not any(
+                    language in requirement or requirement in language
+                    for language in available
+                ):
+                    return False
+
+        if settings.get("exclude_outside_locations"):
+            target_locations = [
+                str(value).casefold()
+                for value in settings.get("target_locations", [])
+            ]
+            job_location = str(evaluation.get("job_location") or "").casefold()
+            if job_location and target_locations:
+                if not any(
+                    target in job_location or job_location in target
+                    for target in target_locations
+                ):
+                    return False
+        return True
 
     @staticmethod
     def _update_run(run_id: str, **values: Any) -> None:

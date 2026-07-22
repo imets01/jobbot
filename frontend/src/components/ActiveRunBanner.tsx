@@ -25,7 +25,7 @@ export function ActiveRunBanner() {
           setRun(completed);
           showToast(
             completed.status === "completed"
-              ? `${completed.run_type} run completed`
+              ? "Job search completed"
               : completed.error_details ?? "Run failed",
             completed.status === "completed" ? "success" : "error",
           );
@@ -56,9 +56,9 @@ export function ActiveRunBanner() {
           <Icon className={running ? "spin" : ""} size={18} />
         </span>
         <div>
-          <strong>{running ? `${run.run_type} run in progress` : `${run.run_type} run ${run.status}`}</strong>
+          <strong>{running ? "Job search in progress" : `Job search ${run.status}`}</strong>
           <span>
-            {run.jobs_analyzed}/{run.jobs_queued || run.jobs_discovered || 0} analyzed · {run.good_matches} matches
+            {run.jobs_analyzed}/{run.jobs_queued || run.jobs_discovered || 0} scored · {run.good_matches} qualifying matches
           </span>
         </div>
       </div>

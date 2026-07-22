@@ -113,6 +113,15 @@ export function MatchBadges({ job }: { job: Job }) {
   const result = job.latest_analysis;
   if (!result) return <span className="badge badge-neutral">Needs review</span>;
   if (result.error_message) return <span className="badge badge-danger">Analysis failed</span>;
+  if (result.match_score !== null) {
+    const tone = result.match_score >= 90 ? "success" : result.match_score >= 75 ? "info" : result.match_score >= 60 ? "warning" : "neutral";
+    return (
+      <span className="badge-row">
+        <span className={`badge badge-${tone}`}><Sparkles size={13} /> {result.recommendation_label ?? `${result.match_score} match`}</span>
+        {!result.qualifies && <span className="badge badge-neutral">Filtered</span>}
+      </span>
+    );
+  }
   return (
     <span className="badge-row">
       {result.is_good_match && result.seniority_ok ? (

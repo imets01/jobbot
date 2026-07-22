@@ -109,6 +109,41 @@ def _extract_description(page: Page) -> str:
         return ""
 
 
+def _extract_search_cards(page: Page, attempts: int = 3) -> list[dict[str, str]]:
+    """Extract one search page atomically, retrying transient redirects.
+
+    LinkedIn can continue navigating after ``domcontentloaded``. Querying and
+    then iterating element handles during that redirect leaves stale handles and
+    raises "Execution context was destroyed". A single page evaluation returns
+    plain dictionaries, and retrying that atomic operation tolerates the race.
+    """
+    for attempt in range(attempts):
+        try:
+            cards = page.eval_on_selector_all(
+                "li",
+                """elements => elements.map(card => {
+                    const title = card.querySelector('h3.base-search-card__title');
+                    const company = card.querySelector('h4.base-search-card__subtitle');
+                    const link = card.querySelector('a.base-card__full-link');
+                    return title && link ? {
+                        title: title.textContent.trim(),
+                        company: company ? company.textContent.trim() : 'Unknown',
+                        link: (link.href || '').split('?')[0],
+                    } : null;
+                }).filter(Boolean)""",
+            )
+            return cards
+        except PlaywrightError:
+            if attempt + 1 >= attempts:
+                raise
+            page.wait_for_timeout(300 * (attempt + 1))
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except PlaywrightTimeoutError:
+                pass
+    return []
+
+
 def scrape_jobs(
     role: str = config.DEFAULT_ROLE,
     location: str = config.DEFAULT_LOCATION,
@@ -158,7 +193,14 @@ def scrape_jobs(
             except PlaywrightTimeoutError:
                 break
 
-            cards = page.query_selector_all("li")
+            try:
+                cards = _extract_search_cards(page)
+            except PlaywrightError as exc:
+                print(
+                    "[scraper] LinkedIn kept redirecting the search page; "
+                    f"stopping pagination safely: {exc}"
+                )
+                break
             if not cards:
                 break
 
@@ -167,13 +209,7 @@ def scrape_jobs(
                 if len(card_infos) >= max_jobs:
                     break
 
-                title_el = card.query_selector("h3.base-search-card__title")
-                company_el = card.query_selector("h4.base-search-card__subtitle")
-                link_el = card.query_selector("a.base-card__full-link")
-                if not (title_el and link_el):
-                    continue
-
-                link = (link_el.get_attribute("href") or "").split("?")[0]
+                link = card["link"]
                 job_id = _job_id_from_url(link)
                 if not job_id or job_id in seen_ids:
                     continue
@@ -181,10 +217,8 @@ def scrape_jobs(
 
                 card_infos.append(
                     {
-                        "title": title_el.inner_text().strip(),
-                        "company": company_el.inner_text().strip()
-                        if company_el
-                        else "Unknown",
+                        "title": card["title"],
+                        "company": card["company"],
                         "link": link,
                         "job_id": job_id,
                     }

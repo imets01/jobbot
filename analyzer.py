@@ -4,14 +4,9 @@ analyzer.py
 Loads scraped job JSON files from the `/data` directory and uses the Google
 Gemini SDK (`google-genai`) to have the model parse each raw job description.
 
-Gemini evaluates whether each job is a good fit for the candidate profile
-(an entry-level technical security / solution engineer). It returns a *strict*
-structured JSON object containing:
-
-  - is_good_match (bool): True if the role fits the candidate's profile.
-  - seniority_ok (bool): True if the role targets ~0-2 years of experience
-                         (i.e. not a senior/lead role requiring many years).
-  - verdict (str): A short human-readable explanation of the decision.
+Gemini evaluates each job against the persisted candidate profile and returns a
+strict 0-100 score, criterion breakdown, strengths, gaps, and application advice.
+The legacy boolean fields remain available to command-line and web callers.
 
 Structured output is enforced natively via the model's `response_schema` /
 `response_mime_type` configuration, so responses are guaranteed valid JSON.
@@ -52,11 +47,37 @@ Candidate profile:
 
 # System instruction that constrains the model's role and behavior.
 SYSTEM_INSTRUCTION = (
-    "You are a precise job-matching assistant. Given a candidate profile and a "
-    "raw job description, you decide whether the job is a realistic, relevant "
-    "fit for the candidate. Be strict: reject pure-sales roles and roles that "
-    "require far more experience than the candidate has."
+    "You are a precise, evidence-grounded job-matching assistant. Given a "
+    "structured candidate profile, raw CV evidence, search controls, and a job "
+    "description, score whether the job is a realistic fit. Never invent "
+    "candidate qualifications or treat preferred job criteria as mandatory."
 )
+
+# Each component has an explicit maximum. The backend recomputes the total so
+# callers never need to trust an inconsistent model-supplied sum.
+SCORE_MAXIMUMS = {
+    "role_title_alignment": 15,
+    "skills_match": 20,
+    "experience_level_match": 15,
+    "location_match": 10,
+    "work_model_match": 5,
+    "education_match": 5,
+    "certification_match": 5,
+    "language_match": 5,
+    "career_goal_alignment": 10,
+    "cover_letter_relevance": 5,
+    "critical_requirements": 5,
+}
+
+
+def _score_property(name: str, maximum: int) -> dict:
+    return {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": maximum,
+        "description": f"Points awarded for {name.replace('_', ' ')} (0-{maximum}).",
+    }
+
 
 # Structured response schema Gemini must adhere to.
 RESPONSE_SCHEMA = {
@@ -79,31 +100,72 @@ RESPONSE_SCHEMA = {
         },
         "verdict": {
             "type": "string",
-            "description": "Short one-sentence explanation, max 25 words.",
+            "description": "Short one-sentence explanation, max 35 words.",
+        },
+        "score_breakdown": {
+            "type": "object",
+            "properties": {
+                name: _score_property(name, maximum)
+                for name, maximum in SCORE_MAXIMUMS.items()
+            },
+            "required": list(SCORE_MAXIMUMS),
+        },
+        "matched_strengths": {"type": "array", "items": {"type": "string"}},
+        "weak_areas": {"type": "array", "items": {"type": "string"}},
+        "potential_concerns": {"type": "array", "items": {"type": "string"}},
+        "missing_requirements": {"type": "array", "items": {"type": "string"}},
+        "suggested_resume_keywords": {"type": "array", "items": {"type": "string"}},
+        "application_strategy": {"type": "string"},
+        "work_model": {
+            "type": "string",
+            "description": "Remote, Hybrid, Onsite, Flexible, or Unknown.",
+        },
+        "required_experience_years": {
+            "type": "number",
+            "description": "Minimum explicitly required years, or 0 when unspecified.",
+        },
+        "required_languages": {"type": "array", "items": {"type": "string"}},
+        "critical_gaps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Only genuine blockers, not optional or learnable preferences.",
         },
     },
-    "required": ["is_good_match", "seniority_ok", "verdict"],
+    "required": [
+        "is_good_match",
+        "seniority_ok",
+        "verdict",
+        "score_breakdown",
+        "matched_strengths",
+        "weak_areas",
+        "potential_concerns",
+        "missing_requirements",
+        "suggested_resume_keywords",
+        "application_strategy",
+        "work_model",
+        "required_experience_years",
+        "required_languages",
+        "critical_gaps",
+    ],
 }
 
 # Instruction template describing the classification task.
 USER_PROMPT_TEMPLATE = """\
 {profile}
 
-Using the candidate profile above, analyze the job delimited by triple backticks.
+Using the candidate profile, CV evidence, and search controls above, analyze the
+job delimited by triple backticks. Award points conservatively for every score
+component, respecting each component's maximum. Distinguish explicit required
+qualifications from preferred qualifications and reasonable learnable gaps.
 
-Decide:
-  1. is_good_match: Is this a relevant, technical role (security, solution/sales
-     engineering with a strong technical focus, DevOps, or similar) that suits
-     the candidate? Reject roles that are mostly sales/account management with
-     little hands-on technical work.
-  2. seniority_ok: Does the role realistically target an early-career candidate
-     (about 0-2 years)? Set false if it clearly requires 5+ years or is a
-     Senior/Staff/Principal/Lead role.
-
-Provide a short "verdict" (max 25 words) explaining your decision.
+Set is_good_match true for a realistic score of at least 60 with no critical
+blocker. Set seniority_ok false when the title or explicit experience requirement
+is materially beyond the candidate. Extract required years, languages, and work
+model only when supported by the description. Return concise, actionable detail.
 
 Job title: {title}
 Company: {company}
+Location: {location}
 
 Job description:
 ```
@@ -167,6 +229,7 @@ def analyze_job(
         profile=candidate_profile,
         title=job.get("title", "Unknown"),
         company=job.get("company", "Unknown"),
+        location=job.get("location", "Unknown"),
         description=job.get("description", "") or "(no description available)",
     )
 
@@ -184,7 +247,7 @@ def analyze_job(
                     # JSON answer. Without this, gemini-2.5 models spend tokens
                     # on internal reasoning and truncate the structured output.
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    max_output_tokens=512,
+                    max_output_tokens=4096,
                 ),
             )
             break
@@ -203,11 +266,47 @@ def analyze_job(
     # `response.text` is JSON constrained by the schema above.
     result = _parse_structured_response(response.text or "{}")
 
-    # Normalize to guarantee the expected keys/types downstream.
+    # Normalize score components and recompute a bounded 0-100 total.
+    raw_breakdown = result.get("score_breakdown") or {}
+    breakdown = {
+        name: max(0, min(maximum, int(raw_breakdown.get(name, 0) or 0)))
+        for name, maximum in SCORE_MAXIMUMS.items()
+    }
+    score = sum(breakdown.values())
+
+    def string_list(key: str) -> list[str]:
+        values = result.get(key) or []
+        return [str(value).strip() for value in values if str(value).strip()]
+
+    if score >= 90:
+        recommendation = "Excellent match"
+    elif score >= 75:
+        recommendation = "Strong match"
+    elif score >= 60:
+        recommendation = "Possible match"
+    else:
+        recommendation = "Low match"
+
+    verdict = str(result.get("verdict", "")).strip()
+    critical_gaps = string_list("critical_gaps")
     return {
-        "is_good_match": bool(result.get("is_good_match", False)),
+        "is_good_match": bool(result.get("is_good_match", score >= 60)) and not critical_gaps,
         "seniority_ok": bool(result.get("seniority_ok", False)),
-        "verdict": str(result.get("verdict", "")).strip(),
+        "verdict": verdict,
+        "match_score": score,
+        "recommendation_label": recommendation,
+        "short_explanation": verdict,
+        "score_breakdown": breakdown,
+        "matched_strengths": string_list("matched_strengths"),
+        "weak_areas": string_list("weak_areas"),
+        "potential_concerns": string_list("potential_concerns"),
+        "missing_requirements": string_list("missing_requirements"),
+        "suggested_resume_keywords": string_list("suggested_resume_keywords"),
+        "application_strategy": str(result.get("application_strategy", "")).strip(),
+        "work_model": str(result.get("work_model", "Unknown")).strip() or "Unknown",
+        "required_experience_years": max(0.0, float(result.get("required_experience_years", 0) or 0)),
+        "required_languages": string_list("required_languages"),
+        "critical_gaps": critical_gaps,
     }
 
 
@@ -256,13 +355,16 @@ def analyze_all(
             "is_good_match": evaluation["is_good_match"],
             "seniority_ok": evaluation["seniority_ok"],
             "verdict": evaluation["verdict"],
+            "match_score": evaluation["match_score"],
+            "recommendation_label": evaluation["recommendation_label"],
         }
         results.append(record)
 
         flag = "MATCH" if record["is_good_match"] and record["seniority_ok"] else "skip"
         print(
             f"[analyzer] [{flag}] {record['title']} @ {record['company']} "
-            f"-> {record['verdict']}"
+            f"-> {record['match_score']}/100 {record['recommendation_label']}: "
+            f"{record['verdict']}"
         )
 
     return results

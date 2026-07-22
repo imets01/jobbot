@@ -3,37 +3,65 @@
 from __future__ import annotations
 
 import math
+import json
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 import config
-from analyzer import CANDIDATE_PROFILE
 from backend.database import get_db, init_database, session_scope
-from backend.models import AnalysisResult, AnalysisRun, Application, Job
+from backend.cover_letter_service import generate_cover_letter
+from backend.cv_service import (
+    delete_stored_cv,
+    extract_structured_profile,
+    extract_text,
+    store_cv_bytes,
+    validate_cv_upload,
+)
+from backend.models import (
+    AnalysisResult,
+    AnalysisRun,
+    Application,
+    CoverLetter,
+    CVDocument,
+    Job,
+    utc_now,
+)
+from backend.profile_service import json_dict, json_list
 from backend.repository import (
+    create_cover_letter,
     dashboard_data,
+    get_cv_document,
     get_job_analyses,
     get_job_row,
     get_or_create_profile,
+    get_or_create_search_settings,
     get_or_update_application,
     get_run_results,
+    get_structured_profile,
     import_data_directory,
+    latest_cover_letter,
     list_applications,
     list_companies,
     list_jobs,
     list_runs,
-    reset_profile,
+    reset_structured_profile,
+    search_settings_dict,
     set_job_archived,
-    update_profile,
+    set_job_dismissed,
+    update_cover_letter_content,
+    update_search_settings,
+    update_structured_profile,
+    upsert_cv_document,
 )
 from backend.run_manager import RunConflictError, run_manager
+from backend.search_sources import AVAILABLE_SOURCE_NAMES, SOURCE_CAPABILITIES
 from backend.schemas import (
     AnalysisResultOut,
     ApplicationBoardItem,
@@ -43,16 +71,24 @@ from backend.schemas import (
     ArchiveUpdate,
     CandidateProfileOut,
     CandidateProfileUpdate,
+    CoverLetterOut,
+    CoverLetterUpdate,
+    CVDocumentOut,
+    CVExtractionOut,
     DashboardSummary,
+    DismissUpdate,
     JobDetail,
     JobListItem,
     PaginatedJobs,
     PaginatedRuns,
     RunOut,
-    RunRequest,
     RunResultItem,
-    SettingsOut,
+    SearchControls,
+    SearchControlsOut,
+    SearchRunRequest,
+    SearchSourceCapability,
     StatusCount,
+    StructuredCandidateProfile,
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -71,6 +107,7 @@ async def lifespan(_app: FastAPI):
                 f"{stats.files_failed} failed."
             )
         get_or_create_profile(session)
+        get_or_create_search_settings(session)
     yield
 
 
@@ -90,11 +127,68 @@ app.add_middleware(
 
 
 def analysis_out(value: AnalysisResult | None) -> AnalysisResultOut | None:
-    return AnalysisResultOut.model_validate(value) if value else None
+    if value is None:
+        return None
+    return AnalysisResultOut(
+        id=value.id,
+        job_id=value.job_id,
+        run_id=value.run_id,
+        created_at=value.created_at,
+        candidate_profile_snapshot=value.candidate_profile_snapshot,
+        candidate_profile_version=value.candidate_profile_version,
+        is_good_match=value.is_good_match,
+        seniority_ok=value.seniority_ok,
+        verdict=value.verdict,
+        gemini_model=value.gemini_model,
+        error_message=value.error_message,
+        match_score=value.match_score,
+        qualifies=value.qualifies,
+        recommendation_label=value.recommendation_label,
+        short_explanation=value.short_explanation or value.verdict,
+        score_breakdown={
+            key: int(score)
+            for key, score in json_dict(value.score_breakdown_json).items()
+        },
+        matched_strengths=json_list(value.matched_strengths_json),
+        weak_areas=json_list(value.weak_areas_json),
+        potential_concerns=json_list(value.potential_concerns_json),
+        missing_requirements=json_list(value.missing_requirements_json),
+        suggested_resume_keywords=json_list(value.resume_keywords_json),
+        application_strategy=value.application_strategy,
+        work_model=value.work_model,
+        required_experience_years=value.required_experience_years,
+        required_languages=json_list(value.required_languages_json),
+        critical_gaps=json_list(value.critical_gaps_json),
+    )
 
 
 def application_out(value: Application | None) -> ApplicationOut | None:
     return ApplicationOut.model_validate(value) if value else None
+
+
+def cv_out(value: CVDocument | None) -> CVDocumentOut | None:
+    if value is None:
+        return None
+    return CVDocumentOut(
+        file_name=value.original_name,
+        content_type=value.content_type,
+        size_bytes=value.size_bytes,
+        uploaded_at=value.uploaded_at,
+        extracted_at=value.extracted_at,
+        has_raw_text=bool(value.raw_text.strip()),
+    )
+
+
+def profile_out(session: Session) -> CandidateProfileOut:
+    profile = get_or_create_profile(session)
+    return CandidateProfileOut(
+        profile=StructuredCandidateProfile.model_validate(
+            get_structured_profile(session)
+        ),
+        version=profile.version,
+        updated_at=profile.updated_at,
+        cv=cv_out(get_cv_document(session)),
+    )
 
 
 def job_item(
@@ -112,6 +206,7 @@ def job_item(
         first_seen=job.first_seen,
         last_seen=job.last_seen,
         archived=job.archived,
+        dismissed=job.dismissed,
         latest_analysis=analysis_out(analysis),
         application=application_out(application),
     )
@@ -136,16 +231,6 @@ def start_run_or_409(
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.get("/api/settings", response_model=SettingsOut)
-def settings() -> SettingsOut:
-    return SettingsOut(
-        default_role=config.DEFAULT_ROLE,
-        default_location=config.DEFAULT_LOCATION,
-        default_max_jobs=config.MAX_JOBS,
-        gemini_model=config.GEMINI_MODEL,
-    )
 
 
 @app.get("/api/dashboard", response_model=DashboardSummary)
@@ -177,6 +262,8 @@ def jobs(
     application_status: ApplicationStatus | None = None,
     company: str | None = Query(None, max_length=300),
     archived: Literal["active", "archived", "all"] = "active",
+    dismissed: Literal["active", "dismissed", "all"] = "active",
+    minimum_score: int | None = Query(None, ge=0, le=100),
     sort: Literal["newest", "last_analyzed", "company", "match_quality"] = "newest",
     direction: Literal["asc", "desc"] = "desc",
 ) -> PaginatedJobs:
@@ -191,6 +278,8 @@ def jobs(
         application_status=application_status.value if application_status else None,
         company=company,
         archived=archived,
+        dismissed=dismissed,
+        minimum_score=minimum_score,
         sort=sort,
         direction=direction,
     )
@@ -234,6 +323,18 @@ def archive_job(job_id: int, payload: ArchiveUpdate, session: DbSession) -> JobL
     return job_item(job, analysis, application)
 
 
+@app.patch("/api/jobs/{job_id}/dismiss", response_model=JobListItem)
+def dismiss_job(job_id: int, payload: DismissUpdate, session: DbSession) -> JobListItem:
+    row = get_job_row(session, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job, analysis, application = row
+    set_job_dismissed(session, job, payload.dismissed)
+    session.commit()
+    session.refresh(job)
+    return job_item(job, analysis, application)
+
+
 @app.put("/api/jobs/{job_id}/application", response_model=ApplicationOut)
 def save_application(
     job_id: int,
@@ -263,6 +364,91 @@ def reanalyze_job(job_id: int, session: DbSession) -> RunOut:
     return start_run_or_409("analyzer", {"mode": "reanalyze"}, job_id=job_id)
 
 
+@app.get(
+    "/api/jobs/{job_id}/cover-letter",
+    response_model=CoverLetterOut | None,
+)
+def get_job_cover_letter(job_id: int, session: DbSession) -> CoverLetterOut | None:
+    if session.get(Job, job_id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    letter = latest_cover_letter(session, job_id)
+    return CoverLetterOut.model_validate(letter) if letter else None
+
+
+@app.post(
+    "/api/jobs/{job_id}/cover-letter",
+    response_model=CoverLetterOut,
+    status_code=201,
+)
+def generate_job_cover_letter(job_id: int, session: DbSession) -> CoverLetterOut:
+    row = get_job_row(session, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job, latest, _application = row
+    if latest is None or latest.error_message:
+        raise HTTPException(
+            status_code=409,
+            detail="Analyze this job successfully before generating a cover letter.",
+        )
+    profile_record = get_or_create_profile(session)
+    profile = get_structured_profile(session)
+    if not str(profile.get("base_cover_letter") or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Add and save a base cover letter in Candidate Profile first.",
+        )
+    cv = get_cv_document(session)
+    analysis = analysis_out(latest)
+    if analysis is None:  # pragma: no cover
+        raise HTTPException(status_code=409, detail="Match analysis unavailable")
+    try:
+        content = generate_cover_letter(
+            profile=profile,
+            raw_cv_text=cv.raw_text if cv else "",
+            job={
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "source": job.source,
+                "description": job.description,
+            },
+            analysis=analysis.model_dump(mode="json"),
+        )
+    except Exception as exc:  # surface provider failures without losing state
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cover letter generation failed: {exc}",
+        ) from exc
+    letter = create_cover_letter(
+        session,
+        job_id=job.id,
+        analysis_result_id=latest.id,
+        profile_version=profile_record.version,
+        content=content,
+        model=config.GEMINI_MODEL,
+    )
+    session.commit()
+    return CoverLetterOut.model_validate(letter)
+
+
+@app.put(
+    "/api/jobs/{job_id}/cover-letter/{letter_id}",
+    response_model=CoverLetterOut,
+)
+def save_job_cover_letter(
+    job_id: int,
+    letter_id: int,
+    payload: CoverLetterUpdate,
+    session: DbSession,
+) -> CoverLetterOut:
+    letter = session.get(CoverLetter, letter_id)
+    if letter is None or letter.job_id != job_id:
+        raise HTTPException(status_code=404, detail="Cover letter not found")
+    update_cover_letter_content(session, letter, payload.content)
+    session.commit()
+    return CoverLetterOut.model_validate(letter)
+
+
 @app.get("/api/applications", response_model=list[ApplicationBoardItem])
 def applications(session: DbSession) -> list[ApplicationBoardItem]:
     return [
@@ -276,13 +462,7 @@ def applications(session: DbSession) -> list[ApplicationBoardItem]:
 
 @app.get("/api/profile", response_model=CandidateProfileOut)
 def candidate_profile(session: DbSession) -> CandidateProfileOut:
-    profile = get_or_create_profile(session)
-    return CandidateProfileOut(
-        content=profile.content,
-        version=profile.version,
-        updated_at=profile.updated_at,
-        is_default=profile.content.strip() == CANDIDATE_PROFILE.strip(),
-    )
+    return profile_out(session)
 
 
 @app.put("/api/profile", response_model=CandidateProfileOut)
@@ -290,41 +470,147 @@ def save_candidate_profile(
     payload: CandidateProfileUpdate,
     session: DbSession,
 ) -> CandidateProfileOut:
-    profile = update_profile(session, payload.content)
+    update_structured_profile(session, payload.profile.model_dump(mode="json"))
     session.commit()
-    return CandidateProfileOut(
-        content=profile.content,
-        version=profile.version,
-        updated_at=profile.updated_at,
-        is_default=profile.content.strip() == CANDIDATE_PROFILE.strip(),
-    )
+    return profile_out(session)
 
 
 @app.post("/api/profile/reset", response_model=CandidateProfileOut)
 def restore_candidate_profile(session: DbSession) -> CandidateProfileOut:
-    profile = reset_profile(session)
+    reset_structured_profile(session)
     session.commit()
-    return CandidateProfileOut(
-        content=profile.content,
-        version=profile.version,
-        updated_at=profile.updated_at,
-        is_default=True,
+    return profile_out(session)
+
+
+@app.post("/api/profile/cv", response_model=CVDocumentOut, status_code=201)
+async def upload_candidate_cv(
+    session: DbSession,
+    file: UploadFile = File(...),
+) -> CVDocumentOut:
+    filename = file.filename or "cv"
+    content = await file.read(config.MAX_CV_SIZE_BYTES + 1)
+    try:
+        extension = validate_cv_upload(filename, file.content_type, len(content))
+        raw_text = extract_text(content, extension)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # malformed PDF/DOCX
+        raise HTTPException(
+            status_code=422,
+            detail=f"The CV could not be read: {exc}",
+        ) from exc
+
+    previous = get_cv_document(session)
+    previous_path = previous.storage_path if previous else None
+    path = store_cv_bytes(filename, extension, content)
+    document = upsert_cv_document(
+        session,
+        original_name=filename,
+        content_type=file.content_type or (
+            "application/pdf" if extension == ".pdf" else
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        storage_path=str(path),
+        size_bytes=len(content),
+        raw_text=raw_text,
+    )
+    session.commit()
+    if previous_path and previous_path != str(path):
+        delete_stored_cv(previous_path)
+    result = cv_out(document)
+    if result is None:  # pragma: no cover - document was just created
+        raise HTTPException(status_code=500, detail="CV metadata was not saved")
+    return result
+
+
+@app.post("/api/profile/cv/extract", response_model=CVExtractionOut)
+def extract_candidate_profile_from_cv(session: DbSession) -> CVExtractionOut:
+    document = get_cv_document(session)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Upload a CV before extracting it.")
+    try:
+        extracted = extract_structured_profile(document.raw_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    current = get_structured_profile(session)
+    merged = dict(current)
+    for key, value in extracted.items():
+        if value not in ("", [], None):
+            merged[key] = value
+    validated = StructuredCandidateProfile.model_validate(merged)
+    update_structured_profile(session, validated.model_dump(mode="json"))
+    document.extracted_json = json.dumps(extracted, ensure_ascii=False)
+    document.extracted_at = utc_now()
+    session.commit()
+    metadata = cv_out(document)
+    if metadata is None:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="CV metadata unavailable")
+    return CVExtractionOut(extracted_profile=validated, cv=metadata)
+
+
+@app.get("/api/search-controls", response_model=SearchControlsOut)
+def get_search_controls(session: DbSession) -> SearchControlsOut:
+    settings = get_or_create_search_settings(session)
+    return SearchControlsOut(
+        **search_settings_dict(settings),
+        updated_at=settings.updated_at,
     )
 
 
-@app.post("/api/runs/scraper", response_model=RunOut, status_code=202)
-def run_scraper(payload: RunRequest) -> RunOut:
-    return start_run_or_409("scraper", payload.model_dump())
+@app.put("/api/search-controls", response_model=SearchControlsOut)
+def save_search_controls(
+    payload: SearchControls,
+    session: DbSession,
+) -> SearchControlsOut:
+    unavailable = set(payload.sources) - AVAILABLE_SOURCE_NAMES
+    if unavailable:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "These search sources are not connected yet: "
+                + ", ".join(sorted(unavailable))
+            ),
+        )
+    settings = update_search_settings(session, payload.model_dump(mode="json"))
+    session.commit()
+    return SearchControlsOut(
+        **search_settings_dict(settings),
+        updated_at=settings.updated_at,
+    )
 
 
-@app.post("/api/runs/analyzer", response_model=RunOut, status_code=202)
-def run_analyzer() -> RunOut:
-    return start_run_or_409("analyzer", {"mode": "new_jobs"})
+@app.get(
+    "/api/search-controls/sources",
+    response_model=list[SearchSourceCapability],
+)
+def search_source_capabilities() -> list[SearchSourceCapability]:
+    return [SearchSourceCapability(**item) for item in SOURCE_CAPABILITIES]
 
 
-@app.post("/api/runs/full", response_model=RunOut, status_code=202)
-def run_full_pipeline(payload: RunRequest) -> RunOut:
-    return start_run_or_409("full", payload.model_dump())
+@app.post("/api/runs/search", response_model=RunOut, status_code=202)
+def run_structured_search(
+    payload: SearchRunRequest,
+    session: DbSession,
+) -> RunOut:
+    if payload.controls is not None:
+        unavailable = set(payload.controls.sources) - AVAILABLE_SOURCE_NAMES
+        if unavailable:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "These search sources are not connected yet: "
+                    + ", ".join(sorted(unavailable))
+                ),
+            )
+        settings = update_search_settings(
+            session, payload.controls.model_dump(mode="json")
+        )
+        session.commit()
+    else:
+        settings = get_or_create_search_settings(session)
+    controls = search_settings_dict(settings)
+    return start_run_or_409("search", {"search_controls": controls})
 
 
 @app.get("/api/runs/active", response_model=RunOut | None)
@@ -340,7 +626,7 @@ def runs(
     session: DbSession,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    run_type: Literal["scraper", "analyzer", "full"] | None = None,
+    run_type: Literal["search", "scraper", "analyzer", "full"] | None = None,
     run_status: Literal["pending", "running", "completed", "failed"] | None = Query(
         None, alias="status"
     ),
@@ -380,7 +666,7 @@ def run_results(run_id: str, session: DbSession) -> list[RunResultItem]:
     return [
         RunResultItem(
             job=job_item(job, analysis, application),
-            analysis=AnalysisResultOut.model_validate(analysis),
+            analysis=analysis_out(analysis),
         )
         for job, analysis, application in get_run_results(session, run_id)
     ]

@@ -5,7 +5,7 @@ import {
   FileClock,
   Menu,
   Moon,
-  PlayCircle,
+  Search,
   Sun,
   UserRoundCog,
   X,
@@ -15,12 +15,12 @@ import { NavLink } from "react-router-dom";
 import { ActiveRunBanner } from "./ActiveRunBanner";
 
 const links = [
-  { to: "/", label: "Dashboard", icon: ChartNoAxesCombined, end: true },
-  { to: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
-  { to: "/history", label: "Analysis History", icon: FileClock },
+  { to: "/", label: "Start a Search", icon: Search, end: true },
+  { to: "/jobs", label: "Job Matches", icon: BriefcaseBusiness },
   { to: "/applications", label: "Applications", icon: ClipboardList },
+  { to: "/dashboard", label: "Results Dashboard", icon: ChartNoAxesCombined },
   { to: "/profile", label: "Candidate Profile", icon: UserRoundCog },
-  { to: "/controls", label: "Run Controls", icon: PlayCircle },
+  { to: "/history", label: "Search History", icon: FileClock },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -70,8 +70,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Menu size={20} />
           </button>
           <div className="topbar-title">
-            <strong>Career intelligence</strong>
-            <span>Scrape · evaluate · apply</span>
+            <strong>Job search workspace</strong>
+            <span>Search · match · apply</span>
           </div>
           <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label={`Switch to ${dark ? "light" : "dark"} theme`}>
             {dark ? <Sun size={17} /> : <Moon size={17} />}

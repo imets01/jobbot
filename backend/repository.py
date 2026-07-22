@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import and_, case, func, not_, or_, select
+from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from analyzer import CANDIDATE_PROFILE
@@ -18,8 +18,20 @@ from backend.models import (
     AnalysisRun,
     Application,
     CandidateProfile,
+    CoverLetter,
+    CVDocument,
     Job,
+    SearchSettings,
     utc_now,
+)
+from backend.profile_service import (
+    DEFAULT_PROFILE,
+    DEFAULT_SEARCH_SETTINGS,
+    build_profile_snapshot,
+    initial_profile_from_legacy,
+    json_dict,
+    json_list,
+    render_profile_text,
 )
 
 
@@ -147,10 +159,48 @@ def import_data_directory(session: Session, data_dir: Path) -> ImportStats:
 def get_or_create_profile(session: Session) -> CandidateProfile:
     profile = session.get(CandidateProfile, 1)
     if profile is None:
-        profile = CandidateProfile(id=1, content=CANDIDATE_PROFILE.strip(), version=1)
+        structured = initial_profile_from_legacy(CANDIDATE_PROFILE)
+        profile = CandidateProfile(
+            id=1,
+            content=render_profile_text(structured),
+            structured_json=json.dumps(structured, ensure_ascii=False, sort_keys=True),
+            version=1,
+        )
         session.add(profile)
         session.flush()
+    elif not json_dict(profile.structured_json):
+        structured = initial_profile_from_legacy(profile.content)
+        profile.structured_json = json.dumps(
+            structured, ensure_ascii=False, sort_keys=True
+        )
+        profile.content = render_profile_text(structured)
+        session.flush()
     return profile
+
+
+def get_structured_profile(session: Session) -> dict[str, Any]:
+    profile = get_or_create_profile(session)
+    return json_dict(profile.structured_json, DEFAULT_PROFILE)
+
+
+def update_structured_profile(
+    session: Session, structured: dict[str, Any]
+) -> CandidateProfile:
+    profile = get_or_create_profile(session)
+    encoded = json.dumps(structured, ensure_ascii=False, sort_keys=True)
+    if profile.structured_json != encoded:
+        profile.structured_json = encoded
+        profile.content = render_profile_text(structured)
+        profile.version += 1
+        profile.updated_at = utc_now()
+        session.flush()
+    return profile
+
+
+def reset_structured_profile(session: Session) -> CandidateProfile:
+    return update_structured_profile(
+        session, json.loads(json.dumps(DEFAULT_PROFILE))
+    )
 
 
 def update_profile(session: Session, content: str) -> CandidateProfile:
@@ -166,6 +216,109 @@ def update_profile(session: Session, content: str) -> CandidateProfile:
 
 def reset_profile(session: Session) -> CandidateProfile:
     return update_profile(session, CANDIDATE_PROFILE.strip())
+
+
+def get_cv_document(session: Session) -> CVDocument | None:
+    return session.get(CVDocument, 1)
+
+
+def upsert_cv_document(
+    session: Session,
+    *,
+    original_name: str,
+    content_type: str,
+    storage_path: str,
+    size_bytes: int,
+    raw_text: str,
+) -> CVDocument:
+    document = get_cv_document(session)
+    if document is None:
+        document = CVDocument(
+            id=1,
+            original_name=original_name,
+            content_type=content_type,
+            storage_path=storage_path,
+            size_bytes=size_bytes,
+            raw_text=raw_text,
+        )
+        session.add(document)
+    else:
+        document.original_name = original_name
+        document.content_type = content_type
+        document.storage_path = storage_path
+        document.size_bytes = size_bytes
+        document.raw_text = raw_text
+        document.extracted_json = "{}"
+        document.uploaded_at = utc_now()
+        document.extracted_at = None
+    session.flush()
+    return document
+
+
+def get_or_create_search_settings(session: Session) -> SearchSettings:
+    settings = session.get(SearchSettings, 1)
+    if settings is None:
+        defaults = DEFAULT_SEARCH_SETTINGS
+        settings = SearchSettings(
+            id=1,
+            keywords_json=json.dumps(defaults["keywords"]),
+            target_locations_json=json.dumps(defaults["target_locations"]),
+            work_models_json=json.dumps(defaults["work_models"]),
+            minimum_match_score=defaults["minimum_match_score"],
+            number_of_jobs=defaults["number_of_jobs"],
+            include_stretch_roles=defaults["include_stretch_roles"],
+            max_required_experience_years=defaults[
+                "max_required_experience_years"
+            ],
+            exclude_unavailable_languages=defaults[
+                "exclude_unavailable_languages"
+            ],
+            exclude_outside_locations=defaults["exclude_outside_locations"],
+            sources_json=json.dumps(defaults["sources"]),
+        )
+        session.add(settings)
+        session.flush()
+    return settings
+
+
+def search_settings_dict(settings: SearchSettings) -> dict[str, Any]:
+    return {
+        "keywords": json_list(settings.keywords_json),
+        "target_locations": json_list(settings.target_locations_json),
+        "work_models": json_list(settings.work_models_json),
+        "minimum_match_score": settings.minimum_match_score,
+        "number_of_jobs": settings.number_of_jobs,
+        "include_stretch_roles": settings.include_stretch_roles,
+        "max_required_experience_years": settings.max_required_experience_years,
+        "exclude_unavailable_languages": settings.exclude_unavailable_languages,
+        "exclude_outside_locations": settings.exclude_outside_locations,
+        "sources": json_list(settings.sources_json),
+    }
+
+
+def update_search_settings(
+    session: Session, values: dict[str, Any]
+) -> SearchSettings:
+    settings = get_or_create_search_settings(session)
+    settings.keywords_json = json.dumps(values["keywords"], ensure_ascii=False)
+    settings.target_locations_json = json.dumps(
+        values["target_locations"], ensure_ascii=False
+    )
+    settings.work_models_json = json.dumps(values["work_models"], ensure_ascii=False)
+    settings.minimum_match_score = int(values["minimum_match_score"])
+    settings.number_of_jobs = int(values["number_of_jobs"])
+    settings.include_stretch_roles = bool(values["include_stretch_roles"])
+    settings.max_required_experience_years = values[
+        "max_required_experience_years"
+    ]
+    settings.exclude_unavailable_languages = bool(
+        values["exclude_unavailable_languages"]
+    )
+    settings.exclude_outside_locations = bool(values["exclude_outside_locations"])
+    settings.sources_json = json.dumps(values["sources"], ensure_ascii=False)
+    settings.updated_at = utc_now()
+    session.flush()
+    return settings
 
 
 def latest_analysis_id_subquery():
@@ -198,6 +351,8 @@ def list_jobs(
     application_status: str | None = None,
     company: str | None = None,
     archived: str = "active",
+    dismissed: str = "active",
+    minimum_score: int | None = None,
     sort: str = "newest",
     direction: str = "desc",
 ) -> tuple[list[tuple[Job, AnalysisResult | None, Application | None]], int]:
@@ -240,6 +395,16 @@ def list_jobs(
         statement = statement.where(Job.archived.is_(False))
     elif archived == "archived":
         statement = statement.where(Job.archived.is_(True))
+    if dismissed == "active":
+        statement = statement.where(Job.dismissed.is_(False))
+    elif dismissed == "dismissed":
+        statement = statement.where(Job.dismissed.is_(True))
+    if minimum_score is not None:
+        statement = statement.where(
+            AnalysisResult.error_message.is_(None),
+            AnalysisResult.qualifies.is_(True),
+            AnalysisResult.match_score >= minimum_score,
+        )
 
     count_statement = select(func.count()).select_from(
         statement.order_by(None).subquery()
@@ -250,17 +415,7 @@ def list_jobs(
         "newest": Job.first_seen,
         "last_analyzed": AnalysisResult.created_at,
         "company": Job.company,
-        "match_quality": case(
-            (
-                and_(
-                    AnalysisResult.is_good_match.is_(True),
-                    AnalysisResult.seniority_ok.is_(True),
-                ),
-                2,
-            ),
-            (AnalysisResult.seniority_ok.is_(True), 1),
-            else_=0,
-        ),
+        "match_quality": AnalysisResult.match_score,
     }
     sort_column = sort_columns.get(sort, Job.first_seen)
     ordered = sort_column.asc() if direction == "asc" else sort_column.desc()
@@ -337,6 +492,12 @@ def set_job_archived(
 
     session.flush()
     return application
+
+
+def set_job_dismissed(session: Session, job: Job, dismissed: bool) -> Job:
+    job.dismissed = dismissed
+    session.flush()
+    return job
 
 
 def jobs_needing_analysis(
@@ -451,6 +612,44 @@ def get_run_results(
     )
 
 
+def latest_cover_letter(session: Session, job_id: int) -> CoverLetter | None:
+    return session.scalar(
+        select(CoverLetter)
+        .where(CoverLetter.job_id == job_id)
+        .order_by(CoverLetter.created_at.desc(), CoverLetter.id.desc())
+    )
+
+
+def create_cover_letter(
+    session: Session,
+    *,
+    job_id: int,
+    analysis_result_id: int | None,
+    profile_version: int,
+    content: str,
+    model: str,
+) -> CoverLetter:
+    letter = CoverLetter(
+        job_id=job_id,
+        analysis_result_id=analysis_result_id,
+        candidate_profile_version=profile_version,
+        content=content,
+        gemini_model=model,
+    )
+    session.add(letter)
+    session.flush()
+    return letter
+
+
+def update_cover_letter_content(
+    session: Session, letter: CoverLetter, content: str
+) -> CoverLetter:
+    letter.content = content.strip()
+    letter.updated_at = utc_now()
+    session.flush()
+    return letter
+
+
 def active_run(session: Session) -> AnalysisRun | None:
     return session.scalar(
         select(AnalysisRun)
@@ -468,16 +667,24 @@ def dashboard_data(session: Session) -> dict[str, Any]:
             .order_by(Job.last_seen.desc())
         ).all()
     )
-    profile = get_or_create_profile(session)
-    waiting_ids = {job.id for job in jobs_needing_analysis(session, profile.content)}
+    settings = get_or_create_search_settings(session)
+    cv = get_cv_document(session)
+    profile_snapshot = build_profile_snapshot(
+        get_structured_profile(session),
+        search_settings_dict(settings),
+        cv.raw_text if cv else "",
+    )
+    waiting_ids = {job.id for job in jobs_needing_analysis(session, profile_snapshot)}
     good_rows = [
         row
         for row in rows
         if row[1]
         and row[1].error_message is None
-        and row[1].is_good_match
-        and row[1].seniority_ok
+        and row[1].qualifies
+        and (row[1].match_score or 0) >= settings.minimum_match_score
+        and not row[0].dismissed
     ]
+    good_rows.sort(key=lambda row: row[1].match_score or 0, reverse=True)
     submitted_statuses = {"Applied", "Interviewing", "Offer", "Rejected", "Withdrawn"}
     today = date.today()
     applications = [row[2] for row in rows if row[2] is not None]

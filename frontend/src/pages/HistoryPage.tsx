@@ -1,4 +1,4 @@
-import { CalendarRange, ChevronDown, ChevronRight, CircleAlert, Clock3, History } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, History, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { EmptyState, ErrorState, LoadingState, PageHeader, RunStatusBadge } from "../components/Ui";
@@ -18,9 +18,9 @@ function RunResults({ runId }: { runId: string }) {
     <div className="run-results-list">
       {results.map(({ job, analysis }) => (
         <div className="run-result-row" key={analysis.id}>
-          <span className={`result-dot ${analysis.error_message ? "error" : analysis.is_good_match && analysis.seniority_ok ? "match" : "skip"}`} />
+          <span className={`result-dot ${analysis.error_message ? "error" : (analysis.qualifies ?? (analysis.is_good_match && analysis.seniority_ok)) ? "match" : "skip"}`} />
           <div><strong>{job.title}</strong><span>{job.company}</span></div>
-          <p>{analysis.error_message ?? analysis.verdict}</p>
+          <p>{analysis.error_message ?? `${analysis.match_score !== null ? `${analysis.match_score}/100 · ` : ""}${analysis.short_explanation || analysis.verdict}`}</p>
         </div>
       ))}
     </div>
@@ -33,7 +33,7 @@ export function HistoryPage() {
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [filters, setFilters] = useState({ run_type: "", status: "", date_from: "", date_to: "" });
+  const [filters, setFilters] = useState({ status: "", date_from: "", date_to: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,17 +60,16 @@ export function HistoryPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Audit trail" title="Analysis history" description="Every scraper and Gemini run remains visible, including prior profile snapshots and failures." />
+      <PageHeader eyebrow="Audit trail" title="Search history" description="Every end-to-end job search remains visible, including its scored results and failures." />
       <section className="panel history-panel">
         <div className="filter-grid history-filters">
-          <label>Run type<select value={filters.run_type} onChange={(e) => update("run_type", e.target.value)}><option value="">All types</option><option value="scraper">Scraper</option><option value="analyzer">Analyzer</option><option value="full">Full pipeline</option></select></label>
           <label>Status<select value={filters.status} onChange={(e) => update("status", e.target.value)}><option value="">All statuses</option><option value="pending">Pending</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label>
           <label>From<input type="date" value={filters.date_from} onChange={(e) => update("date_from", e.target.value)} /></label>
           <label>To<input type="date" value={filters.date_to} onChange={(e) => update("date_to", e.target.value)} /></label>
         </div>
 
         {loading && !data ? <LoadingState label="Loading run history" /> : error ? <ErrorState message={error} onRetry={load} /> : !data?.items.length ? (
-          <EmptyState title="No runs found" description="Start the scraper or analyzer to create your first history entry." icon={History} />
+          <EmptyState title="No searches found" description="Start a job search to create your first history entry." icon={History} />
         ) : (
           <div className="run-list">
             {data.items.map((run) => {
@@ -78,8 +77,8 @@ export function HistoryPage() {
               return (
                 <article className="run-card" key={run.id}>
                   <button className="run-card-summary" onClick={() => setExpanded(isExpanded ? null : run.id)} aria-expanded={isExpanded}>
-                    <span className="run-type-icon">{run.run_type === "full" ? <History size={18} /> : run.run_type === "scraper" ? <CalendarRange size={18} /> : <Clock3 size={18} />}</span>
-                    <div className="run-primary"><strong>{run.run_type === "full" ? "Full pipeline" : run.run_type[0].toUpperCase() + run.run_type.slice(1)}</strong><span>{formatDate(run.created_at, true)}</span></div>
+                    <span className="run-type-icon">{run.run_type === "search" || run.run_type === "full" ? <Search size={18} /> : <History size={18} />}</span>
+                    <div className="run-primary"><strong>{run.run_type === "search" || run.run_type === "full" ? "Job search" : "Previous activity"}</strong><span>{formatDate(run.created_at, true)}</span></div>
                     <RunStatusBadge status={run.status} />
                     <div className="run-metrics"><span><strong>{run.jobs_discovered}</strong> discovered</span><span><strong>{run.jobs_analyzed}</strong> analyzed</span><span><strong>{run.good_matches}</strong> matches</span>{run.failures > 0 && <span className="danger-text"><CircleAlert size={14} /> {run.failures} failed</span>}</div>
                     {isExpanded ? <ChevronDown size={19} /> : <ChevronRight size={19} />}
