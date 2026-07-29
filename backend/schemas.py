@@ -258,6 +258,11 @@ class RunOut(BaseModel):
     good_matches: int
     failures: int
     error_details: str | None
+    search_controls: SearchControls | None = None
+
+
+class RunRemovalOut(BaseModel):
+    disposition: str
 
 
 class PaginatedRuns(BaseModel):

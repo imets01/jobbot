@@ -1,7 +1,5 @@
 import {
-  ArrowLeft,
   ArrowRight,
-  BriefcaseBusiness,
   Check,
   FileText,
   MapPin,
@@ -26,9 +24,8 @@ import type {
 
 const WORK_MODELS = ["Remote", "Hybrid", "Onsite"];
 const STEPS = [
-  { number: 1, label: "Candidate", description: "CV and profile" },
-  { number: 2, label: "Search", description: "Roles and filters" },
-  { number: 3, label: "Review", description: "Confirm and launch" },
+  { number: 1, label: "Candidate", description: "Set up once" },
+  { number: 2, label: "Search", description: "Adjust and launch" },
 ];
 
 function editableControls(value: SearchControls): SearchControls {
@@ -46,8 +43,17 @@ function fileSize(bytes: number) {
     : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function candidateProfileReady(profile: StructuredCandidateProfile) {
+  return Boolean(
+    profile.full_name.trim()
+    && profile.professional_summary.trim()
+    && profile.skills.length,
+  );
+}
+
 export function SearchPage() {
   const [step, setStep] = useState(1);
+  const [setupComplete, setSetupComplete] = useState(false);
   const [record, setRecord] = useState<CandidateProfile | null>(null);
   const [savedProfile, setSavedProfile] = useState<StructuredCandidateProfile | null>(null);
   const [profile, setProfile] = useState<StructuredCandidateProfile | null>(null);
@@ -81,6 +87,9 @@ export function SearchPage() {
       setControls(searchControls);
       setSources(capabilities);
       setActiveSearch(Boolean(active));
+      const candidateConfigured = candidateProfileReady(candidate.profile);
+      setSetupComplete(candidateConfigured);
+      setStep(candidateConfigured ? 2 : 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to prepare the job search");
     } finally {
@@ -159,23 +168,11 @@ export function SearchPage() {
     setSaving(true);
     try {
       await saveCandidate();
+      setSetupComplete(true);
       setStep(2);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Unable to save candidate profile", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const continueFromSearch = async () => {
-    setSaving(true);
-    try {
-      await saveControls();
-      setStep(3);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Unable to save search criteria", "error");
     } finally {
       setSaving(false);
     }
@@ -238,15 +235,21 @@ export function SearchPage() {
     }
   };
 
-  const candidateReady = Boolean(profile.full_name.trim() && profile.professional_summary.trim() && profile.skills.length);
+  const candidateReady = candidateProfileReady(profile);
   const searchReady = Boolean(controls.keywords.length && controls.target_locations.length && controls.sources.length);
 
   return (
     <>
       <PageHeader
-        eyebrow="New search"
-        title="Find your best matching roles"
-        description="Set up your candidate evidence and search criteria once. Jobbot will discover listings, score every job, and keep only the strongest matches."
+        eyebrow={step === 1 && !setupComplete ? "First search setup" : "New search"}
+        title={step === 1
+          ? setupComplete ? "Update your candidate details" : "Set up your candidate profile"
+          : "Find your best matching roles"}
+        description={step === 1 && !setupComplete
+          ? "Add your candidate evidence once. You can review and update it whenever your experience changes."
+          : step === 1
+            ? "Keep the evidence used for matching current, then return to roles and filters."
+            : "Review the saved candidate overview, adjust roles and filters, then start the search immediately."}
         actions={activeSearch ? <Link className="button button-secondary" to="/dashboard">View active search <ArrowRight size={16} /></Link> : undefined}
       />
 
@@ -270,8 +273,8 @@ export function SearchPage() {
         <section className="search-wizard-grid">
           <div className="search-wizard-main">
             <article className="panel wizard-section">
-              <div className="section-heading"><div><p className="eyebrow">Step 1 of 3</p><h2>Candidate evidence</h2></div><UserRound size={20} /></div>
-              <p className="section-description">Upload a CV for deeper reasoning, then verify the core profile fields used in every match score.</p>
+              <div className="section-heading"><div><p className="eyebrow">Step 1 of 2</p><h2>Candidate evidence</h2></div><UserRound size={20} /></div>
+              <p className="section-description">Upload a CV for deeper reasoning, then verify the core profile fields reused by every future search.</p>
 
               <div className="wizard-cv-card">
                 <div className="wizard-cv-icon"><FileText size={24} /></div>
@@ -322,8 +325,8 @@ export function SearchPage() {
         <section className="search-wizard-grid">
           <div className="search-wizard-main">
             <article className="panel wizard-section">
-              <div className="section-heading"><div><p className="eyebrow">Step 2 of 3</p><h2>What should Jobbot search for?</h2></div><Search size={20} /></div>
-              <p className="section-description">These settings drive discovery and determine which scored jobs are allowed into your results.</p>
+              <div className="section-heading"><div><p className="eyebrow">Roles and filters</p><h2>What should Jobbot search for?</h2></div><Search size={20} /></div>
+              <p className="section-description">Adjust these settings for this search, then launch directly. Changes are saved for the next search.</p>
               <div className="profile-field-stack">
                 <TagInput label="Job search keywords" values={controls.keywords} onChange={(values) => updateControls("keywords", values)} placeholder="Solution Engineer, Security Engineer…" />
                 <TagInput label="Target locations" values={controls.target_locations} onChange={(values) => updateControls("target_locations", values)} placeholder="Zurich, Switzerland" />
@@ -349,6 +352,24 @@ export function SearchPage() {
           </div>
 
           <aside className="search-wizard-aside">
+            <article className="panel review-summary-card candidate-overview-card">
+              <div className="section-heading"><div><p className="eyebrow">Candidate overview</p><h3>{profile.full_name || "Candidate profile"}</h3></div><UserRound size={19} /></div>
+              <p>{profile.professional_summary || "No professional summary provided."}</p>
+              <div className="candidate-skill-preview" aria-label="Candidate skills">
+                {profile.skills.slice(0, 5).map((skill) => <span className="badge badge-neutral" key={skill}>{skill}</span>)}
+                {profile.skills.length > 5 && <span className="badge badge-neutral">+{profile.skills.length - 5} more</span>}
+              </div>
+              <dl className="wizard-summary-list">
+                <div><dt>CV</dt><dd>{record.cv ? record.cv.file_name : "Not uploaded"}</dd></div>
+                <div><dt>Location</dt><dd>{profile.current_location || "Not set"}</dd></div>
+                <div><dt>Experience</dt><dd>{profile.years_total_experience} years</dd></div>
+                <div><dt>Languages</dt><dd>{profile.languages.length || "—"}</dd></div>
+              </dl>
+              <div className="candidate-overview-actions">
+                <button className="text-link" onClick={() => { setStep(1); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Edit core details <ArrowRight size={14} /></button>
+                <Link className="text-link" to="/profile">Open full profile <ArrowRight size={14} /></Link>
+              </div>
+            </article>
             <article className="panel readiness-card">
               <p className="eyebrow">Search preview</p>
               <h3>{searchReady ? "Ready to search" : "Add the search scope"}</h3>
@@ -363,40 +384,27 @@ export function SearchPage() {
         </section>
       )}
 
-      {step === 3 && (
-        <section className="search-review-layout">
-          <article className="panel search-review-hero">
-            <span className="review-icon"><Sparkles size={26} /></span>
-            <p className="eyebrow">Step 3 of 3</p>
-            <h2>Ready to find your best matches</h2>
-            <p>Jobbot will search LinkedIn, normalize and deduplicate listings, score each one against your profile, and keep only jobs that pass your filters.</p>
-          </article>
-          <div className="search-review-grid">
-            <article className="panel review-summary-card">
-              <div className="section-heading"><div><p className="eyebrow">Candidate</p><h3>{profile.full_name || "Candidate profile"}</h3></div><UserRound size={19} /></div>
-              <p>{profile.professional_summary || "No professional summary provided."}</p>
-              <dl className="wizard-summary-list"><div><dt>CV</dt><dd>{record.cv ? record.cv.file_name : "Not uploaded"}</dd></div><div><dt>Skills</dt><dd>{profile.skills.length}</dd></div><div><dt>Languages</dt><dd>{profile.languages.length}</dd></div><div><dt>Experience</dt><dd>{profile.years_total_experience} years</dd></div></dl>
-              <button className="text-link" onClick={() => setStep(1)}>Edit candidate <ArrowRight size={14} /></button>
-            </article>
-            <article className="panel review-summary-card">
-              <div className="section-heading"><div><p className="eyebrow">Search</p><h3>{controls.keywords.slice(0, 2).join(" · ") || "Search criteria"}</h3></div><BriefcaseBusiness size={19} /></div>
-              <p>{controls.target_locations.join(" · ") || "No target locations selected"}</p>
-              <dl className="wizard-summary-list"><div><dt>Match threshold</dt><dd>{controls.minimum_match_score}/100</dd></div><div><dt>Return</dt><dd>Top {controls.number_of_jobs}</dd></div><div><dt>Work model</dt><dd>{controls.work_models.join(", ") || "Any"}</dd></div><div><dt>Source</dt><dd>{controls.sources.join(", ")}</dd></div></dl>
-              <button className="text-link" onClick={() => setStep(2)}>Edit search criteria <ArrowRight size={14} /></button>
-            </article>
-          </div>
-          <article className="panel launch-search-card">
-            <div><strong>{activeSearch ? "A job search is already running" : "Start one complete job search"}</strong><span>{activeSearch ? "Open the results dashboard to follow its progress." : `Discover, score, and return up to ${controls.number_of_jobs} matches in one run.`}</span></div>
-            {activeSearch ? <Link className="button button-primary" to="/dashboard">View search progress <ArrowRight size={16} /></Link> : <button className="button button-primary button-large" disabled={starting || !candidateReady || !searchReady} onClick={startSearch}><Search size={18} /> {starting ? "Starting search…" : "Start Job Search"}</button>}
-          </article>
-        </section>
-      )}
-
-      {step < 3 && <footer className="wizard-footer">
-        {step > 1 ? <button className="button button-ghost" onClick={() => setStep((current) => current - 1)}><ArrowLeft size={16} /> Back</button> : <span />}
-        {step === 1 && <button className="button button-primary" disabled={saving || !candidateReady} onClick={continueFromCandidate}>{saving ? "Saving…" : "Save & continue"} <ArrowRight size={16} /></button>}
-        {step === 2 && <button className="button button-primary" disabled={saving || !searchReady} onClick={continueFromSearch}>{saving ? "Saving…" : "Review search"} <ArrowRight size={16} /></button>}
-      </footer>}
+      <footer className="wizard-footer">
+        {step === 1 ? (
+          <>
+            <div className="wizard-footer-copy">
+              <strong>{setupComplete ? "Update candidate details" : "One-time candidate setup"}</strong>
+              <span>{setupComplete ? "Save any changes and return to this search." : "These details will be summarized instead of shown as a step next time."}</span>
+            </div>
+            <button className="button button-primary" disabled={saving || !candidateReady} onClick={continueFromCandidate}>{saving ? "Saving…" : setupComplete ? "Save & return to search" : "Save & continue"} <ArrowRight size={16} /></button>
+          </>
+        ) : (
+          <>
+            <div className="wizard-footer-copy">
+              <strong>{activeSearch ? "A job search is already running" : controlsDirty ? "Updated filters ready" : "Search setup ready"}</strong>
+              <span>{activeSearch ? "Open the results dashboard to follow its progress." : `Discover, score, and return up to ${controls.number_of_jobs} matches in one run.`}</span>
+            </div>
+            {activeSearch
+              ? <Link className="button button-primary" to="/dashboard">View search progress <ArrowRight size={16} /></Link>
+              : <button className="button button-primary button-large" disabled={starting || !candidateReady || !searchReady} onClick={startSearch}><Search size={18} /> {starting ? "Starting search…" : "Start Job Search"}</button>}
+          </>
+        )}
+      </footer>
     </>
   );
 }

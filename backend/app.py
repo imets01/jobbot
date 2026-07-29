@@ -51,6 +51,7 @@ from backend.repository import (
     list_companies,
     list_jobs,
     list_runs,
+    remove_run_from_history,
     reset_structured_profile,
     search_settings_dict,
     set_job_archived,
@@ -82,6 +83,7 @@ from backend.schemas import (
     PaginatedJobs,
     PaginatedRuns,
     RunOut,
+    RunRemovalOut,
     RunResultItem,
     SearchControls,
     SearchControlsOut,
@@ -212,6 +214,19 @@ def job_item(
     )
 
 
+def run_out(value: AnalysisRun) -> RunOut:
+    controls = None
+    raw_controls = json_dict(value.parameters_json).get("search_controls")
+    if isinstance(raw_controls, dict):
+        try:
+            controls = SearchControls.model_validate(raw_controls)
+        except ValueError:
+            controls = None
+    return RunOut.model_validate(value).model_copy(
+        update={"search_controls": controls}
+    )
+
+
 def start_run_or_409(
     run_type: str,
     payload: dict,
@@ -220,7 +235,7 @@ def start_run_or_409(
 ) -> RunOut:
     try:
         run = run_manager.start(run_type, payload, job_id=job_id)
-        return RunOut.model_validate(run)
+        return run_out(run)
     except RunConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -237,7 +252,7 @@ def health() -> dict[str, str]:
 def dashboard(session: DbSession) -> DashboardSummary:
     values = dashboard_data(session)
     recent = [job_item(*row) for row in values["recent_good_matches"]]
-    active = RunOut.model_validate(values["active_run"]) if values["active_run"] else None
+    active = run_out(values["active_run"]) if values["active_run"] else None
     return DashboardSummary(
         total_jobs=values["total_jobs"],
         good_matches=values["good_matches"],
@@ -618,7 +633,7 @@ def get_active_run(session: DbSession) -> RunOut | None:
     from backend.repository import active_run
 
     run = active_run(session)
-    return RunOut.model_validate(run) if run else None
+    return run_out(run) if run else None
 
 
 @app.get("/api/runs", response_model=PaginatedRuns)
@@ -643,7 +658,7 @@ def runs(
         date_to=date_to,
     )
     return PaginatedRuns(
-        items=[RunOut.model_validate(item) for item in items],
+        items=[run_out(item) for item in items],
         page=page,
         page_size=page_size,
         total=total,
@@ -656,7 +671,22 @@ def run_status(run_id: str, session: DbSession) -> RunOut:
     run = session.get(AnalysisRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return RunOut.model_validate(run)
+    return run_out(run)
+
+
+@app.delete("/api/runs/{run_id}", response_model=RunRemovalOut)
+def remove_run(run_id: str, session: DbSession) -> RunRemovalOut:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status in {"pending", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait for the search to finish before removing it.",
+        )
+    disposition = remove_run_from_history(session, run)
+    session.commit()
+    return RunRemovalOut(disposition=disposition)
 
 
 @app.get("/api/runs/{run_id}/results", response_model=list[RunResultItem])

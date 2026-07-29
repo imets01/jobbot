@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { JobDrawer } from "../components/JobDrawer";
 import { useToast } from "../components/ToastProvider";
-import { ApplicationBadge, EmptyState, ErrorState, LoadingState, MatchBadges, PageHeader } from "../components/Ui";
+import { EmptyState, ErrorState, LoadingState, MatchBadges, PageHeader } from "../components/Ui";
 import type { ApplicationStatus, Job, Paginated, SearchControls } from "../types";
 import { APPLICATION_STATUSES, formatDate } from "../utils";
 
@@ -29,6 +29,7 @@ export function JobsPage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<number | null>(null);
   const [generating, setGenerating] = useState<number | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState<number | null>(null);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -94,6 +95,24 @@ export function JobsPage() {
     }
   };
 
+  const updateApplicationStatus = async (job: Job, status: ApplicationStatus) => {
+    setUpdatingStatus(job.id);
+    try {
+      await api.saveApplication(job.id, {
+        status,
+        application_date: job.application?.application_date ?? null,
+        next_follow_up_date: job.application?.next_follow_up_date ?? null,
+        notes: job.application?.notes ?? "",
+      });
+      showToast(`${job.title} moved to ${status}`, "success");
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Unable to update application status", "error");
+    } finally {
+      setUpdatingStatus(null);
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -131,7 +150,24 @@ export function JobsPage() {
                   <div className="match-score-block"><strong>{analysis.match_score ?? "—"}</strong><span>/ 100</span><small>{analysis.recommendation_label}</small></div>
                   <div className="match-result-main">
                     <div className="match-result-heading"><div><h2>{job.title}</h2><p>{job.company} · {job.location ?? "Location unavailable"}</p></div><MatchBadges job={job} /></div>
-                    <div className="match-meta-row"><span>{analysis.work_model ?? "Work model unknown"}</span><span>{job.source}</span><span>Analyzed {formatDate(analysis.created_at)}</span><ApplicationBadge status={job.application?.status as ApplicationStatus | undefined} /></div>
+                    <div className="match-meta-row">
+                      <span>{analysis.work_model ?? "Work model unknown"}</span>
+                      <span>{job.source}</span>
+                      <span>Analyzed {formatDate(analysis.created_at)}</span>
+                      <label className="match-status-control">
+                        <span>Application status</span>
+                        <select
+                          aria-label={`Application status for ${job.title}`}
+                          value={job.application?.status ?? ""}
+                          disabled={updatingStatus === job.id}
+                          onChange={(event) => void updateApplicationStatus(job, event.target.value as ApplicationStatus)}
+                        >
+                          {!job.application && <option value="" disabled>Not tracked</option>}
+                          {APPLICATION_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                        </select>
+                        {updatingStatus === job.id && <small>Saving…</small>}
+                      </label>
+                    </div>
                     <p className="match-explanation">{analysis.short_explanation || analysis.verdict}</p>
                     <div className="match-evidence-grid">
                       <div><strong>Matched strengths</strong><ul>{analysis.matched_strengths.slice(0, 3).map((value) => <li key={value}>{value}</li>)}</ul></div>

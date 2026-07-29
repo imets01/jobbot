@@ -70,6 +70,7 @@ class AnalysisRun(Base):
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     parameters_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     results: Mapped[list[AnalysisResult]] = relationship(
         back_populates="run", cascade="all, delete-orphan"

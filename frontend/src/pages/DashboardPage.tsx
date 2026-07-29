@@ -3,6 +3,7 @@ import {
   BriefcaseBusiness,
   CalendarClock,
   ClipboardCheck,
+  History,
   Search,
   Sparkles,
 } from "lucide-react";
@@ -46,6 +47,13 @@ export function DashboardPage() {
     return () => window.removeEventListener("jobbot:refresh", load);
   }, [load]);
 
+  const activeRunId = summary?.active_run?.id;
+  useEffect(() => {
+    if (!activeRunId) return;
+    const timer = window.setInterval(() => void load(), 2000);
+    return () => window.clearInterval(timer);
+  }, [activeRunId, load]);
+
   if (loading) return <LoadingState label="Loading search results" />;
   if (error || !summary) return <ErrorState message={error || "Results unavailable"} onRetry={load} />;
 
@@ -58,7 +66,7 @@ export function DashboardPage() {
         eyebrow="Results"
         title="Search results dashboard"
         description="A secondary overview of your qualifying matches and application progress."
-        actions={<div className="button-row"><Link className="button button-primary" to="/"><Search size={16} /> Start a new search</Link><Link className="button button-secondary" to="/jobs">View all matches <ArrowRight size={16} /></Link></div>}
+        actions={<div className="button-row"><Link className="button button-primary" to="/"><Search size={16} /> Start a new search</Link><Link className="button button-secondary" to="/jobs">View current matches <ArrowRight size={16} /></Link><Link className="button button-secondary" to="/history"><History size={16} /> Browse past searches</Link></div>}
       />
 
       {active && (

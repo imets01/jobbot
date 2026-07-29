@@ -63,6 +63,9 @@ def _apply_sqlite_bootstrap_migrations(bind: Engine) -> None:
         "jobs": {
             "dismissed": "BOOLEAN NOT NULL DEFAULT 0",
         },
+        "analysis_runs": {
+            "hidden": "BOOLEAN NOT NULL DEFAULT 0",
+        },
         "candidate_profiles": {
             "structured_json": "TEXT NOT NULL DEFAULT '{}'",
         },

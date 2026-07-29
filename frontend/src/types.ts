@@ -93,6 +93,7 @@ export interface Run {
   good_matches: number;
   failures: number;
   error_details: string | null;
+  search_controls: SearchControls | null;
 }
 
 export interface RunResult {

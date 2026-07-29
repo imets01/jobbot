@@ -31,9 +31,10 @@ React dashboard <--> FastAPI <--> run manager ----------+
   - A guarded background run manager prevents concurrent duplicate runs.
 - **Frontend** (`frontend/`)
   - React, Vite, and TypeScript.
-  - Search-first home wizard, ranked match results, secondary results dashboard,
-    score breakdowns, search history, Kanban-style applications board,
-    structured profile editor, CV upload, and editable cover letters.
+  - One-time candidate setup followed by a search-first home workspace, ranked
+    match results, secondary results dashboard, score breakdowns, search
+    history, Kanban-style applications board, structured profile editor, CV
+    upload, and editable cover letters.
   - The Gemini key is never included in the frontend bundle.
 
 ## Prerequisites
@@ -74,24 +75,43 @@ build/dependency folders are ignored by Git.
 
 ## Structured workflow
 
-1. Open **Start a Search**. The home page guides the whole setup in three steps.
+1. Open **Start a Search**. The first visit guides you through the essential
+  candidate setup before showing roles and filters.
 2. Upload a PDF or DOCX CV. The original file and locally extracted raw text are
   stored under `data/cv/` and never returned by the API.
 3. Select **Extract Profile from CV** to let Gemini populate supported structured
   fields. Review the essential profile in step one; the full profile editor
   remains available for education, experience, languages, and cover letters.
-4. In step two, set keywords, locations, work models, threshold, top-result
+4. On later visits, **Start a Search** opens directly to the saved candidate
+  overview and search controls. Use **Edit core details** or **Open full
+  profile** only when the candidate information needs updating.
+5. Set keywords, locations, work models, threshold, top-result
   count, seniority/language/location exclusions, and source adapters.
   Search keywords are the single source for target roles and are used for both
   LinkedIn discovery and Gemini career-alignment scoring.
-5. Review the combined candidate and search setup in step three.
-6. Select **Start Job Search** once. There are no separate discovery, analyzer,
-  or full-pipeline actions in the web UI. Every search discovers normalized
-  jobs, scores each from 0-100,
+6. Select **Start Job Search** directly from the search controls. There is no
+  separate review step and there are no separate discovery, analyzer, or
+  full-pipeline actions in the web UI. Every search discovers normalized jobs,
+  scores each from 0-100,
   applies deterministic hard filters, and shows only qualifying top matches.
 7. Open a match to inspect strengths, concerns, missing requirements, score
   breakdown, resume keywords, and application strategy.
 8. Generate, edit, copy, or regenerate a grounded cover letter.
+
+**Job Matches** is the focused shortlist and uses the currently saved score
+threshold and top-result count. Reducing the count does not delete older jobs or
+analyses. Change a match's application status directly in the list to add or
+move it on the application board without opening the detail drawer. Open
+**Search History** to revisit the exact criteria and results from any previous
+search. Historical results default to qualifying matches, can be filtered to
+all analyzed jobs, non-matches, or errors, and open the same job detail and
+application-tracking drawer used elsewhere.
+
+Finished history can be cleaned up without losing application work. Removing a
+completed search hides that history entry while preserving its analyses, jobs,
+applications, and cover letters. Deleting a failed or empty search permanently
+removes its run and analysis records; shared jobs, application tracking, and
+cover letters remain.
 
 After launch, the app opens the secondary **Results Dashboard** to show search
 progress, top matches, and application metrics. Search configuration remains the

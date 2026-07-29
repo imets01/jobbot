@@ -133,4 +133,8 @@ export const api = {
   runs: (params: Record<string, string | number | null | undefined>) =>
     request<Paginated<Run>>(`/api/runs${toQuery(params)}`),
   runResults: (id: string) => request<RunResult[]>(`/api/runs/${id}/results`),
+  removeRun: (id: string) =>
+    request<{ disposition: "hidden" | "deleted" }>(`/api/runs/${id}`, {
+      method: "DELETE",
+    }),
 };

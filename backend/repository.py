@@ -576,7 +576,7 @@ def list_runs(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> tuple[list[AnalysisRun], int]:
-    statement = select(AnalysisRun)
+    statement = select(AnalysisRun).where(AnalysisRun.hidden.is_(False))
     if run_type:
         statement = statement.where(AnalysisRun.run_type == run_type)
     if status:
@@ -610,6 +610,26 @@ def get_run_results(
             .order_by(AnalysisResult.created_at.desc())
         ).all()
     )
+
+
+def remove_run_from_history(session: Session, run: AnalysisRun) -> str:
+    """Hide completed history while permanently deleting failed/empty runs."""
+    if run.status in {"pending", "running"}:
+        raise ValueError("An active search cannot be removed.")
+
+    has_results = session.scalar(
+        select(AnalysisResult.id)
+        .where(AnalysisResult.run_id == run.id)
+        .limit(1)
+    ) is not None
+    if run.status == "failed" or not has_results:
+        session.delete(run)
+        session.flush()
+        return "deleted"
+
+    run.hidden = True
+    session.flush()
+    return "hidden"
 
 
 def latest_cover_letter(session: Session, job_id: int) -> CoverLetter | None:
