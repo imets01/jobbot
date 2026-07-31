@@ -127,3 +127,37 @@ def test_discovery_result_tracks_completed_empty_board(monkeypatch, tmp_path):
     assert result.paths == []
     assert result.errors == []
     assert result.completed_targets == 1
+
+
+def test_greenhouse_retries_transient_server_failure(monkeypatch, tmp_path):
+    class Response:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self.payload
+
+    responses = iter([Response(503, {}), Response(200, {"jobs": []})])
+    calls = []
+    monkeypatch.setattr("backend.sources.ats.httpx.get", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr("backend.sources.ats.time.sleep", lambda delay: calls.append(delay))
+
+    result = GreenhouseAdapter().discover(
+        DiscoveryRequest(
+            keywords=["Security Engineer"],
+            locations=["Zurich, Switzerland"],
+            work_models=["Hybrid"],
+            max_jobs=10,
+            targets=["Example | example"],
+            data_dir=tmp_path,
+        )
+    )
+
+    assert result.errors == []
+    assert result.completed_targets == 1
+    assert calls == [0.5]

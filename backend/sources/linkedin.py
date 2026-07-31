@@ -24,6 +24,7 @@ class LinkedInAdapter(JobSourceAdapter):
                     role=role_query,
                     location=location,
                     max_jobs=per_location,
+                    cancelled=request.cancelled,
                 )
                 result.completed_targets += 1
                 for path in discovered:
@@ -32,4 +33,6 @@ class LinkedInAdapter(JobSourceAdapter):
                         seen_paths.add(path)
             except Exception as exc:  # isolate one location from the others
                 result.errors.append(f"{location}: {type(exc).__name__}: {exc}")
+            if request.cancelled():
+                break
         return result

@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Save,
   ThumbsDown,
+  Trash2,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -34,10 +35,12 @@ const SCORE_MAXIMUMS: Record<string, number> = {
 
 export function JobDrawer({
   jobId,
+  analysisId,
   onClose,
   onChanged,
 }: {
   jobId: number | null;
+  analysisId?: number | null;
   onClose: () => void;
   onChanged?: () => void;
 }) {
@@ -54,6 +57,8 @@ export function JobDrawer({
   const [generatingLetter, setGeneratingLetter] = useState(false);
   const [savingLetter, setSavingLetter] = useState(false);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const drawer = useRef<HTMLElement>(null);
+  const restoreFocus = useRef<HTMLElement | null>(null);
   const { showToast } = useToast();
 
   const load = async () => {
@@ -78,16 +83,44 @@ export function JobDrawer({
 
   useEffect(() => {
     if (jobId === null) return;
-    load();
+    void load();
+    restoreFocus.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     document.body.classList.add("drawer-open");
     window.setTimeout(() => closeButton.current?.focus(), 40);
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+    const handleKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !drawer.current) return;
+      const focusable = Array.from(
+        drawer.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        closeButton.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", escape);
+    window.addEventListener("keydown", handleKeyboard);
     return () => {
       document.body.classList.remove("drawer-open");
-      window.removeEventListener("keydown", escape);
+      window.removeEventListener("keydown", handleKeyboard);
+      restoreFocus.current?.focus();
     };
   }, [jobId]);
 
@@ -107,6 +140,23 @@ export function JobDrawer({
       onChanged?.();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not save application", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const stopTracking = async () => {
+    if (!job?.application) return;
+    const hasDetails = Boolean(notes.trim() || applicationDate || followUpDate);
+    if (hasDetails && !window.confirm("Stop tracking this job and delete its application notes and dates?")) return;
+    setSaving(true);
+    try {
+      await api.untrackApplication(job.id);
+      showToast("Job removed from the application board", "success");
+      await load();
+      onChanged?.();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not remove application tracking", "error");
     } finally {
       setSaving(false);
     }
@@ -184,9 +234,19 @@ export function JobDrawer({
     }
   };
 
+  const displayedAnalysis = analysisId
+    ? job?.analyses.find((analysis) => analysis.id === analysisId) ?? job?.latest_analysis
+    : job?.latest_analysis;
+  const showingHistoricalAnalysis = Boolean(
+    displayedAnalysis
+    && job?.latest_analysis
+    && displayedAnalysis.id !== job.latest_analysis.id,
+  );
+  const displayJob = job ? { ...job, latest_analysis: displayedAnalysis ?? null } : null;
+
   return (
     <div className="drawer-layer" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="job-drawer" role="dialog" aria-modal="true" aria-labelledby="job-drawer-title">
+      <aside ref={drawer} className="job-drawer" role="dialog" aria-modal="true" aria-labelledby="job-drawer-title">
         <div className="drawer-toolbar">
           <span className="eyebrow">Job detail</span>
           <button ref={closeButton} className="icon-button" onClick={onClose} aria-label="Close job details">
@@ -204,7 +264,7 @@ export function JobDrawer({
                 <h2 id="job-drawer-title">{job.title}</h2>
                 <p>{job.company} · {job.location ?? "Location not specified"}</p>
               </div>
-              <MatchBadges job={job} />
+              <MatchBadges job={displayJob ?? job} />
               <div className="job-meta-row">
                 <ApplicationBadge status={job.application?.status} />
                 <span>First seen {formatDate(job.first_seen)}</span>
@@ -231,29 +291,30 @@ export function JobDrawer({
             <section className="detail-section">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">Latest evaluation</p>
+                  <p className="eyebrow">{showingHistoricalAnalysis ? "Selected historical evaluation" : "Latest evaluation"}</p>
                   <h3>Gemini verdict</h3>
                 </div>
               </div>
-              {job.latest_analysis ? job.latest_analysis.error_message ? (
-                <p className="inline-error">{job.latest_analysis.error_message}</p>
-              ) : job.latest_analysis.match_score !== null ? (
+              {showingHistoricalAnalysis && <p className="inline-note">This is the evaluation from the selected past search. Cover-letter generation and reanalysis use the latest saved evaluation.</p>}
+              {displayedAnalysis ? displayedAnalysis.error_message ? (
+                <p className="inline-error">{displayedAnalysis.error_message}</p>
+              ) : displayedAnalysis.match_score !== null ? (
                 <div className="match-detail-analysis">
-                  <div className="detail-score-hero"><strong>{job.latest_analysis.match_score}</strong><span><b>{job.latest_analysis.recommendation_label}</b><small>{job.latest_analysis.short_explanation || job.latest_analysis.verdict}</small></span></div>
+                  <div className="detail-score-hero"><strong>{displayedAnalysis.match_score}</strong><span><b>{displayedAnalysis.recommendation_label}</b><small>{displayedAnalysis.short_explanation || displayedAnalysis.verdict}</small></span></div>
                   <div className="score-breakdown" aria-label="Match score breakdown">
-                    {Object.entries(job.latest_analysis.score_breakdown).map(([criterion, score]) => <div key={criterion}><span>{criterion.replaceAll("_", " ")}</span><strong>{score}</strong><i><b style={{ width: `${Math.min(100, (score / (SCORE_MAXIMUMS[criterion] ?? 20)) * 100)}%` }} /></i></div>)}
+                    {Object.entries(displayedAnalysis.score_breakdown).map(([criterion, score]) => <div key={criterion}><span>{criterion.replaceAll("_", " ")}</span><strong>{score}</strong><i><b style={{ width: `${Math.min(100, (score / (SCORE_MAXIMUMS[criterion] ?? 20)) * 100)}%` }} /></i></div>)}
                   </div>
                   <div className="analysis-detail-grid">
-                    <div><h4>Why this job fits</h4><ul>{job.latest_analysis.matched_strengths.map((value) => <li key={value}>{value}</li>)}</ul></div>
-                    <div><h4>Potential concerns</h4>{job.latest_analysis.potential_concerns.length ? <ul>{job.latest_analysis.potential_concerns.map((value) => <li key={value}>{value}</li>)}</ul> : <p className="muted">No material concerns identified.</p>}</div>
-                    <div><h4>Missing requirements</h4>{job.latest_analysis.missing_requirements.length ? <ul>{job.latest_analysis.missing_requirements.map((value) => <li key={value}>{value}</li>)}</ul> : <p className="muted">No explicit missing requirements.</p>}</div>
-                    <div><h4>Suggested resume keywords</h4><div className="keyword-cloud">{job.latest_analysis.suggested_resume_keywords.map((value) => <span key={value}>{value}</span>)}</div></div>
+                    <div><h4>Why this job fits</h4>{displayedAnalysis.matched_strengths.length ? <ul>{displayedAnalysis.matched_strengths.map((value) => <li key={value}>{value}</li>)}</ul> : <p className="muted">No matched strengths recorded.</p>}</div>
+                    <div><h4>Potential concerns</h4>{displayedAnalysis.potential_concerns.length ? <ul>{displayedAnalysis.potential_concerns.map((value) => <li key={value}>{value}</li>)}</ul> : <p className="muted">No material concerns identified.</p>}</div>
+                    <div><h4>Missing requirements</h4>{displayedAnalysis.missing_requirements.length ? <ul>{displayedAnalysis.missing_requirements.map((value) => <li key={value}>{value}</li>)}</ul> : <p className="muted">No explicit missing requirements.</p>}</div>
+                    <div><h4>Suggested resume keywords</h4><div className="keyword-cloud">{displayedAnalysis.suggested_resume_keywords.map((value) => <span key={value}>{value}</span>)}</div></div>
                   </div>
-                  <div className="application-strategy"><strong>Suggested application strategy</strong><p>{job.latest_analysis.application_strategy || "Emphasize the strongest verified matches and address gaps accurately."}</p></div>
-                  <span className="analysis-model-note">{job.latest_analysis.gemini_model} · {formatDate(job.latest_analysis.created_at, true)}</span>
+                  <div className="application-strategy"><strong>Suggested application strategy</strong><p>{displayedAnalysis.application_strategy || "Emphasize the strongest verified matches and address gaps accurately."}</p></div>
+                  <span className="analysis-model-note">{displayedAnalysis.gemini_model} · {formatDate(displayedAnalysis.created_at, true)}</span>
                 </div>
               ) : (
-                <div className="verdict-card"><p>{job.latest_analysis.verdict || "No verdict returned."}</p><span>{job.latest_analysis.gemini_model} · {formatDate(job.latest_analysis.created_at, true)}</span></div>
+                <div className="verdict-card"><p>{displayedAnalysis.verdict || "No verdict returned."}</p><span>{displayedAnalysis.gemini_model} · {formatDate(displayedAnalysis.created_at, true)}</span></div>
               ) : (
                 <p className="muted">This job has not been analyzed yet.</p>
               )}
@@ -289,7 +350,11 @@ export function JobDrawer({
               <div className="form-grid two-column">
                 <label>
                   Status
-                  <select value={status} onChange={(e) => setStatus(e.target.value as ApplicationStatus)}>
+                  <select value={status} onChange={(event) => {
+                    const nextStatus = event.target.value as ApplicationStatus;
+                    setStatus(nextStatus);
+                    if (nextStatus === "Applied" && !applicationDate) setApplicationDate(todayInput());
+                  }}>
                     {APPLICATION_STATUSES.map((value) => <option key={value}>{value}</option>)}
                   </select>
                 </label>
@@ -319,9 +384,12 @@ export function JobDrawer({
                   placeholder="Contacts, interview notes, next steps…"
                 />
               </label>
-              <button className="button button-primary" onClick={saveApplication} disabled={saving}>
-                <Save size={16} /> {saving ? "Saving…" : "Save application"}
-              </button>
+              <div className="button-row">
+                <button className="button button-primary" onClick={saveApplication} disabled={saving}>
+                  <Save size={16} /> {saving ? "Saving…" : "Save application"}
+                </button>
+                {job.application && <button className="button button-ghost" onClick={stopTracking} disabled={saving}><Trash2 size={16} /> Remove from board</button>}
+              </div>
             </section>
 
             <section className="detail-section">

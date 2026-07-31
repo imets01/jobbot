@@ -7,7 +7,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { JobDrawer } from "../components/JobDrawer";
@@ -29,14 +29,27 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState<number | null>(null);
+  const requestInFlight = useRef(false);
+  const refreshQueued = useRef(false);
 
   const load = useCallback(async () => {
-    setError("");
+    if (requestInFlight.current) {
+      refreshQueued.current = true;
+      return;
+    }
+    requestInFlight.current = true;
     try {
-      setSummary(await api.dashboard());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load search results");
+      do {
+        refreshQueued.current = false;
+        setError("");
+        try {
+          setSummary(await api.dashboard());
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Unable to load search results");
+        }
+      } while (refreshQueued.current);
     } finally {
+      requestInFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -44,15 +57,12 @@ export function DashboardPage() {
   useEffect(() => {
     void load();
     window.addEventListener("jobbot:refresh", load);
-    return () => window.removeEventListener("jobbot:refresh", load);
+    window.addEventListener("jobbot:run-progress", load);
+    return () => {
+      window.removeEventListener("jobbot:refresh", load);
+      window.removeEventListener("jobbot:run-progress", load);
+    };
   }, [load]);
-
-  const activeRunId = summary?.active_run?.id;
-  useEffect(() => {
-    if (!activeRunId) return;
-    const timer = window.setInterval(() => void load(), 2000);
-    return () => window.clearInterval(timer);
-  }, [activeRunId, load]);
 
   if (loading) return <LoadingState label="Loading search results" />;
   if (error || !summary) return <ErrorState message={error || "Results unavailable"} onRetry={load} />;

@@ -41,7 +41,7 @@ function RunResults({
   refreshToken,
 }: {
   runId: string;
-  onSelectJob: (jobId: number) => void;
+  onSelectJob: (jobId: number, analysisId: number) => void;
   refreshToken: number;
 }) {
   const [results, setResults] = useState<RunResult[] | null>(null);
@@ -114,7 +114,7 @@ function RunResults({
       ) : (
         <div className="run-results-list">
           {visibleResults.map(({ job, analysis }) => (
-            <button className="run-result-row" type="button" key={analysis.id} onClick={() => onSelectJob(job.id)}>
+            <button className="run-result-row" type="button" key={analysis.id} onClick={() => onSelectJob(job.id, analysis.id)}>
               <span className={`result-dot ${analysis.error_message ? "error" : isMatch(analysis) ? "match" : "skip"}`} />
               <div className="run-result-title"><strong>{job.title}</strong><span>{job.company} · {job.location ?? "Location unavailable"}</span></div>
               <p>{analysis.error_message ?? `${analysis.match_score !== null ? `${analysis.match_score}/100 · ` : ""}${analysis.short_explanation || analysis.verdict}`}</p>
@@ -137,7 +137,7 @@ export function HistoryPage() {
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [selectedJob, setSelectedJob] = useState<number | null>(null);
+  const [selectedResult, setSelectedResult] = useState<{ jobId: number; analysisId: number } | null>(null);
   const [resultsRefresh, setResultsRefresh] = useState(0);
   const [removing, setRemoving] = useState<string | null>(null);
   const [filters, setFilters] = useState({ status: "", date_from: "", date_to: "" });
@@ -199,7 +199,7 @@ export function HistoryPage() {
       />
       <section className="panel history-panel">
         <div className="filter-grid history-filters">
-          <label>Status<select value={filters.status} onChange={(event) => update("status", event.target.value)}><option value="">All statuses</option><option value="pending">Pending</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label>
+          <label>Status<select value={filters.status} onChange={(event) => update("status", event.target.value)}><option value="">All statuses</option><option value="pending">Pending</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label>
           <label>From<input type="date" value={filters.date_from} onChange={(event) => update("date_from", event.target.value)} /></label>
           <label>To<input type="date" value={filters.date_to} onChange={(event) => update("date_to", event.target.value)} /></label>
         </div>
@@ -212,7 +212,7 @@ export function HistoryPage() {
               const isExpanded = expanded === run.id;
               const controls = run.search_controls;
               const isSearchRun = run.run_type === "search" || run.run_type === "full";
-              const canRemove = run.status === "completed" || run.status === "failed";
+              const canRemove = run.status === "completed" || run.status === "failed" || run.status === "cancelled";
               const permanentlyDeleted = run.status === "failed" || run.jobs_analyzed === 0;
               return (
                 <article className="run-card" key={run.id}>
@@ -254,7 +254,7 @@ export function HistoryPage() {
                           <div><dt>Company boards</dt><dd>{controls.greenhouse_boards.length + controls.lever_sites.length || "None"}</dd></div>
                         </dl>
                       )}
-                      <RunResults runId={run.id} onSelectJob={setSelectedJob} refreshToken={resultsRefresh} />
+                      <RunResults runId={run.id} onSelectJob={(jobId, analysisId) => setSelectedResult({ jobId, analysisId })} refreshToken={resultsRefresh} />
                     </div>
                   )}
                 </article>
@@ -264,7 +264,12 @@ export function HistoryPage() {
           </div>
         )}
       </section>
-      <JobDrawer jobId={selectedJob} onClose={() => setSelectedJob(null)} onChanged={() => setResultsRefresh((current) => current + 1)} />
+      <JobDrawer
+        jobId={selectedResult?.jobId ?? null}
+        analysisId={selectedResult?.analysisId}
+        onClose={() => setSelectedResult(null)}
+        onChanged={() => setResultsRefresh((current) => current + 1)}
+      />
     </>
   );
 }

@@ -9,7 +9,7 @@ export type ApplicationStatus =
   | "Archived";
 
 export type RunType = "search" | "scraper" | "analyzer" | "full";
-export type RunStatus = "pending" | "running" | "completed" | "failed";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface AnalysisResult {
   id: number;

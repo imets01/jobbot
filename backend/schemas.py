@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 def _clean_string_list(values: list[str]) -> list[str]:
@@ -44,6 +51,7 @@ class RunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class LanguageEntry(BaseModel):
@@ -131,8 +139,21 @@ class SearchControls(BaseModel):
         "lever_sites",
     )
     @classmethod
-    def clean_lists(cls, value: list[str]) -> list[str]:
-        return _clean_string_list(value)
+    def clean_lists(cls, value: list[str], info: ValidationInfo) -> list[str]:
+        cleaned = _clean_string_list(value)
+        maximums = {
+            "keywords": 200,
+            "target_locations": 300,
+            "work_models": 50,
+            "sources": 100,
+            "greenhouse_boards": 500,
+            "lever_sites": 500,
+        }
+        maximum = maximums.get(info.field_name, 500)
+        if any(len(item) > maximum for item in cleaned):
+            label = info.field_name.replace("_", " ")
+            raise ValueError(f"Each {label} entry must be {maximum} characters or fewer.")
+        return cleaned
 
     @model_validator(mode="after")
     def require_selected_source_targets(self) -> "SearchControls":

@@ -6,7 +6,7 @@ import { JobDrawer } from "../components/JobDrawer";
 import { useToast } from "../components/ToastProvider";
 import { EmptyState, ErrorState, LoadingState, MatchBadges, PageHeader } from "../components/Ui";
 import type { ApplicationStatus, Job, Paginated, SearchControls } from "../types";
-import { APPLICATION_STATUSES, formatDate } from "../utils";
+import { APPLICATION_STATUSES, formatDate, todayInput } from "../utils";
 
 const initialFilters = {
   application_status: "",
@@ -95,16 +95,32 @@ export function JobsPage() {
     }
   };
 
-  const updateApplicationStatus = async (job: Job, status: ApplicationStatus) => {
+  const updateApplicationStatus = async (job: Job, status: ApplicationStatus | "") => {
+    if (!status && job.application) {
+      const hasDetails = Boolean(
+        job.application.notes.trim()
+        || job.application.application_date
+        || job.application.next_follow_up_date,
+      );
+      if (hasDetails && !window.confirm("Stop tracking this job and delete its application notes and dates?")) {
+        return;
+      }
+    }
     setUpdatingStatus(job.id);
     try {
-      await api.saveApplication(job.id, {
-        status,
-        application_date: job.application?.application_date ?? null,
-        next_follow_up_date: job.application?.next_follow_up_date ?? null,
-        notes: job.application?.notes ?? "",
-      });
-      showToast(`${job.title} moved to ${status}`, "success");
+      if (!status) {
+        await api.untrackApplication(job.id);
+        showToast(`${job.title} removed from the application board`, "success");
+      } else {
+        await api.saveApplication(job.id, {
+          status,
+          application_date: job.application?.application_date
+            ?? (status === "Applied" ? todayInput() : null),
+          next_follow_up_date: job.application?.next_follow_up_date ?? null,
+          notes: job.application?.notes ?? "",
+        });
+        showToast(`${job.title} moved to ${status}`, "success");
+      }
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Unable to update application status", "error");
@@ -138,6 +154,9 @@ export function JobsPage() {
           </div>
           <button className="text-link" onClick={() => { setFilters(initialFilters); setSearchInput(""); }}><SlidersHorizontal size={14} /> Reset filters</button>
         </div>
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {loading ? "Updating job matches" : `${data?.total ?? 0} job matches available`}
+        </div>
 
         {loading && !data ? <LoadingState label="Loading scored matches" /> : error ? <ErrorState message={error} onRetry={load} /> : !data?.items.length ? (
           <EmptyState title="No qualifying matches" description="Start a job search or adjust the score threshold and filters in the guided search setup." icon={Sparkles} action={<Link className="button button-primary" to="/">Start Job Search</Link>} />
@@ -160,9 +179,9 @@ export function JobsPage() {
                           aria-label={`Application status for ${job.title}`}
                           value={job.application?.status ?? ""}
                           disabled={updatingStatus === job.id}
-                          onChange={(event) => void updateApplicationStatus(job, event.target.value as ApplicationStatus)}
+                          onChange={(event) => void updateApplicationStatus(job, event.target.value as ApplicationStatus | "")}
                         >
-                          {!job.application && <option value="" disabled>Not tracked</option>}
+                          <option value="">Not tracked</option>
                           {APPLICATION_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
                         </select>
                         {updatingStatus === job.id && <small>Saving…</small>}

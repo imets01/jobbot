@@ -95,6 +95,8 @@ build/dependency folders are ignored by Git.
   full-pipeline actions in the web UI. Every search discovers normalized jobs,
   scores each from 0-100,
   applies deterministic hard filters, and shows only qualifying top matches.
+  Long searches can be stopped from the global progress banner; already saved
+  jobs and completed scores are retained.
 7. Open a match to inspect strengths, concerns, missing requirements, score
   breakdown, resume keywords, and application strategy.
 8. Generate, edit, copy, or regenerate a grounded cover letter.
@@ -103,6 +105,8 @@ build/dependency folders are ignored by Git.
 threshold and top-result count. Reducing the count does not delete older jobs or
 analyses. Change a match's application status directly in the list to add or
 move it on the application board without opening the detail drawer. Open
+**Not tracked** from the status menu to remove it from the board again; if notes
+or dates exist the app confirms before deleting that application metadata. Open
 **Search History** to revisit the exact criteria and results from any previous
 search. Historical results default to qualifying matches, can be filtered to
 all analyzed jobs, non-matches, or errors, and open the same job detail and
@@ -136,6 +140,17 @@ source warning while the other selected sources continue.
 
 Workday, generic career pages, manual URLs, and broad third-party job-board APIs
 remain explicit future adapters; the UI does not claim they are connected.
+
+## Local security boundary
+
+Jobbot contains private CV text and an unauthenticated single-user API. Run it
+only on the local machine and keep Uvicorn bound to `127.0.0.1`. The backend
+accepts only `localhost`/`127.0.0.1` hosts and the documented Vite development
+origins; it is intentionally not configured as an internet-facing service.
+Imported external job links are restricted to HTTP(S), and CV/job text is sent
+to Gemini as untrusted evidence with instructions not to follow embedded
+prompts. Do not deploy Jobbot to a shared host without adding authentication,
+authorization, TLS, rate limiting, and an explicit data-retention policy.
 
 ### Match score interpretation
 
@@ -262,3 +277,8 @@ analysis history, and application workflow updates.
 - Gemini requests are paced according to `ANALYZER_DELAY_SECONDS` in `config.py`.
 - Schema upgrades are additive SQLite bootstrap migrations because this local
   project does not yet use Alembic.
+- Cancellation is cooperative: it interrupts source/page boundaries and the
+  delay between Gemini calls, but an already-running provider request must
+  return before the worker can stop.
+- The frontend currently relies on TypeScript/build validation and browser
+  smoke testing; it does not yet have an automated component/E2E test suite.

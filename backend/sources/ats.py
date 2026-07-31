@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import time
+from typing import Callable
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -19,6 +21,8 @@ from backend.sources.base import (
 )
 
 _REQUEST_HEADERS = {"User-Agent": "Jobbot/1.0 local job discovery"}
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_REQUEST_ATTEMPTS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +30,36 @@ class BoardTarget:
     token: str
     company: str
     api_base: str = ""
+
+
+def _get_json(url: str, cancelled: Callable[[], bool]):
+    last_error: Exception | None = None
+    for attempt in range(_MAX_REQUEST_ATTEMPTS):
+        if cancelled():
+            raise RuntimeError("Discovery cancelled")
+        try:
+            response = httpx.get(
+                url,
+                headers=_REQUEST_HEADERS,
+                timeout=30,
+                follow_redirects=True,
+            )
+            if (
+                getattr(response, "status_code", 200) in _TRANSIENT_STATUS_CODES
+                and attempt + 1 < _MAX_REQUEST_ATTEMPTS
+            ):
+                time.sleep(0.5 * (2**attempt))
+                continue
+            response.raise_for_status()
+            return response.json()
+        except httpx.TransportError as exc:
+            last_error = exc
+            if attempt + 1 >= _MAX_REQUEST_ATTEMPTS:
+                raise
+            time.sleep(0.5 * (2**attempt))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Job-board request failed after retries")
 
 
 def _labeled_target(value: str) -> tuple[str, str]:
@@ -171,18 +205,20 @@ class GreenhouseAdapter(JobSourceAdapter):
         result = DiscoveryResult()
         discovered: list[dict] = []
         for raw_target in request.targets:
+            if request.cancelled():
+                break
             try:
                 target = parse_greenhouse_target(raw_target)
                 url = f"https://boards-api.greenhouse.io/v1/boards/{quote(target.token, safe='')}/jobs?content=true"
-                response = httpx.get(url, headers=_REQUEST_HEADERS, timeout=30, follow_redirects=True)
-                response.raise_for_status()
-                discovered.extend(greenhouse_jobs(response.json(), target, request))
+                discovered.extend(greenhouse_jobs(_get_json(url, request.cancelled), target, request))
                 result.completed_targets += 1
             except Exception as exc:
                 result.errors.append(f"{raw_target}: {type(exc).__name__}: {exc}")
 
         discovered.sort(key=lambda job: str(job.get("scraped_at") or ""), reverse=True)
         for job in discovered[: request.max_jobs]:
+            if request.cancelled():
+                break
             result.paths.append(
                 save_job_payload(
                     job,
@@ -203,12 +239,12 @@ class LeverAdapter(JobSourceAdapter):
         result = DiscoveryResult()
         discovered: list[dict] = []
         for raw_target in request.targets:
+            if request.cancelled():
+                break
             try:
                 target = parse_lever_target(raw_target)
                 url = f"{target.api_base}/v0/postings/{quote(target.token, safe='')}?mode=json"
-                response = httpx.get(url, headers=_REQUEST_HEADERS, timeout=30, follow_redirects=True)
-                response.raise_for_status()
-                payload = response.json()
+                payload = _get_json(url, request.cancelled)
                 if not isinstance(payload, list):
                     raise ValueError("Lever returned an unexpected response")
                 discovered.extend(lever_jobs(payload, target, request))
@@ -218,6 +254,8 @@ class LeverAdapter(JobSourceAdapter):
 
         discovered.sort(key=lambda job: str(job.get("scraped_at") or ""), reverse=True)
         for job in discovered[: request.max_jobs]:
+            if request.cancelled():
+                break
             result.paths.append(
                 save_job_payload(
                     job,

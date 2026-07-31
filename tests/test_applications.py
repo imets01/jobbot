@@ -1,6 +1,7 @@
 from datetime import date
 
 from backend.repository import (
+    delete_application,
     get_or_update_application,
     list_jobs,
     set_job_archived,
@@ -100,3 +101,34 @@ def test_archive_action_creates_status_and_restores_it(session):
     )
     assert saved_total == 1
     assert saved_rows[0][0].id == job.id
+
+
+def test_application_can_be_untracked_without_deleting_job(session):
+    job, _ = upsert_job(
+        session,
+        {
+            "title": "Platform Engineer",
+            "company": "Example",
+            "link": "https://linkedin.com/jobs/view/6512345678",
+            "description": "Platform engineering role.",
+        },
+    )
+    application = get_or_update_application(
+        session,
+        job,
+        status="Archived",
+        application_date=None,
+        next_follow_up_date=None,
+        notes="No longer pursuing.",
+    )
+    session.commit()
+
+    assert job.archived is True
+    assert delete_application(session, job) is True
+    session.commit()
+
+    assert job.archived is False
+    assert job.application is None
+    assert session.get(type(job), job.id) is not None
+    assert session.get(type(application), application.id) is None
+    assert delete_application(session, job) is False

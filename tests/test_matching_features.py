@@ -1,4 +1,5 @@
 import io
+import threading
 
 from docx import Document
 
@@ -22,7 +23,7 @@ from backend.repository import (
     update_search_settings,
     upsert_job,
 )
-from backend.run_manager import RunManager
+from backend.run_manager import RunManager, _analysis_error_message
 from backend.schemas import RunType
 
 
@@ -199,6 +200,93 @@ def test_hard_match_filters_are_deterministic():
 
     evaluation["required_experience_years"] = 6
     assert RunManager._qualifies(evaluation, profile, settings) is False
+
+
+def test_hard_filters_normalize_languages_and_locations_without_substring_false_positives():
+    evaluation = {
+        "match_score": 85,
+        "seniority_ok": True,
+        "critical_gaps": [],
+        "required_experience_years": 2,
+        "work_model": "Hybrid",
+        "required_languages": ["Deutsch C1", "English (fluent)"],
+        "job_location": "Zürich, Switzerland",
+    }
+    profile = {
+        "languages": [
+            {"language": "German", "proficiency": "C1"},
+            {"language": "English", "proficiency": "C1"},
+        ]
+    }
+    settings = {
+        "minimum_match_score": 75,
+        "include_stretch_roles": False,
+        "max_required_experience_years": 4,
+        "work_models": ["Hybrid", "Remote"],
+        "exclude_unavailable_languages": True,
+        "target_locations": ["Zurich, Switzerland"],
+        "exclude_outside_locations": True,
+    }
+
+    assert RunManager._qualifies(evaluation, profile, settings) is True
+
+    evaluation["required_languages"] = ["Swiss German"]
+    assert RunManager._qualifies(evaluation, profile, settings) is False
+
+    evaluation["required_languages"] = ["English"]
+    evaluation["job_location"] = "Zurich, Ohio"
+    assert RunManager._qualifies(evaluation, profile, settings) is False
+
+    evaluation["job_location"] = ""
+    assert RunManager._qualifies(evaluation, profile, settings) is False
+
+    evaluation["job_location"] = "Remote - Switzerland"
+    evaluation["work_model"] = "Remote"
+    assert RunManager._qualifies(evaluation, profile, settings) is True
+
+
+def test_run_manager_records_cancellation_request():
+    manager = RunManager()
+    manager._active_run_id = "cancel-run"
+    manager._cancel_events["cancel-run"] = threading.Event()
+
+    assert manager.cancel("cancel-run") is True
+    assert manager._cancel_events["cancel-run"].is_set() is True
+    assert manager.cancel("other-run") is False
+
+
+def test_cancelled_run_stops_before_discovery(monkeypatch):
+    manager = RunManager()
+    updates: list[dict] = []
+    event = threading.Event()
+    event.set()
+    manager._active_run_id = "cancel-run"
+    manager._cancel_events["cancel-run"] = event
+
+    monkeypatch.setattr(manager, "_update_run", lambda _run_id, **values: updates.append(values))
+    monkeypatch.setattr(
+        manager,
+        "_scrape",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Discovery should not start")),
+    )
+
+    manager._execute("cancel-run", "search", {"search_controls": {}})
+
+    assert updates[0]["status"] == "running"
+    assert updates[-1]["status"] == "cancelled"
+    assert manager._active_run_id is None
+
+
+def test_analysis_error_does_not_expose_private_provider_text():
+    class ProviderError(RuntimeError):
+        code = 429
+
+    message = _analysis_error_message(
+        ProviderError("request included private CV phone number 555-0100")
+    )
+
+    assert message == "Gemini analysis failed: ProviderError (429)."
+    assert "555-0100" not in message
 
 
 def test_docx_text_extraction_and_editable_cover_letter(session):

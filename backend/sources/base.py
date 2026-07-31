@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,7 @@ class DiscoveryRequest:
     max_jobs: int
     targets: list[str]
     data_dir: Path
+    cancelled: Callable[[], bool] = lambda: False
 
 
 @dataclass(slots=True)

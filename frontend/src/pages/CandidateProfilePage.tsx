@@ -194,7 +194,7 @@ export function CandidateProfilePage() {
               <TagInput label="Preferred industries" values={draft.preferred_industries} onChange={(values) => update("preferred_industries", values)} placeholder="Cybersecurity, Cloud…" />
               <TagInput label="Preferred locations" values={draft.preferred_locations} onChange={(values) => update("preferred_locations", values)} placeholder="Zurich, Switzerland" />
             </div>
-            <div><span className="field-label">Work model preference</span><div className="inline-check-grid">{WORK_MODELS.map((model) => <CheckChoice key={model} label={model} checked={draft.work_model_preferences.includes(model)} onChange={(checked) => update("work_model_preferences", checked ? [...draft.work_model_preferences, model] : draft.work_model_preferences.filter((value) => value !== model))} />)}</div></div>
+            <fieldset className="choice-fieldset"><legend className="field-label">Work model preference</legend><div className="inline-check-grid">{WORK_MODELS.map((model) => <CheckChoice key={model} label={model} checked={draft.work_model_preferences.includes(model)} onChange={(checked) => update("work_model_preferences", checked ? [...draft.work_model_preferences, model] : draft.work_model_preferences.filter((value) => value !== model))} />)}</div></fieldset>
           </div>
         </section>
 
@@ -233,7 +233,7 @@ export function CandidateProfilePage() {
               <StringListField label="Projects to highlight" values={draft.projects_to_highlight} onChange={(values) => update("projects_to_highlight", values)} placeholder="Project to mention when relevant" />
             </div>
             <label className="tone-select">Preferred writing tone<select value={draft.writing_tone} onChange={(event) => update("writing_tone", event.target.value)}>{TONES.map((tone) => <option key={tone}>{tone}</option>)}</select></label>
-            <div><span className="field-label">Include when relevant</span><div className="mention-grid">{(Object.keys(MENTION_LABELS) as (keyof MentionPreferences)[]).map((key) => <CheckChoice key={key} label={MENTION_LABELS[key]} checked={draft.mention_preferences[key]} onChange={(checked) => update("mention_preferences", { ...draft.mention_preferences, [key]: checked })} />)}</div></div>
+            <fieldset className="choice-fieldset"><legend className="field-label">Include when relevant</legend><div className="mention-grid">{(Object.keys(MENTION_LABELS) as (keyof MentionPreferences)[]).map((key) => <CheckChoice key={key} label={MENTION_LABELS[key]} checked={draft.mention_preferences[key]} onChange={(checked) => update("mention_preferences", { ...draft.mention_preferences, [key]: checked })} />)}</div></fieldset>
           </div>
         </section>
 

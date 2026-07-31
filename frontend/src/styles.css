@@ -706,7 +706,8 @@ pre {
 .badge-warning,
 .application-interested,
 .run-pending,
-.run-running {
+.run-running,
+.run-cancelled {
   border-color: color-mix(in srgb, var(--cp-warning) 32%, transparent);
   background: color-mix(in srgb, var(--cp-warning) 11%, transparent);
   color: var(--cp-warning);
@@ -825,6 +826,17 @@ pre {
   font-size: 0.68rem;
 }
 
+.run-banner-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.run-banner-actions .button {
+  min-height: 30px;
+}
+
 .progress-track {
   height: 7px;
 }
@@ -919,6 +931,18 @@ label {
   color: var(--cp-text-muted);
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.choice-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice-fieldset legend {
+  margin-bottom: 6px;
+  padding: 0;
 }
 
 .input-with-icon {

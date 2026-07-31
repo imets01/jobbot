@@ -26,6 +26,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote_plus
 
 from playwright.sync_api import (
@@ -148,6 +149,7 @@ def scrape_jobs(
     role: str = config.DEFAULT_ROLE,
     location: str = config.DEFAULT_LOCATION,
     max_jobs: int = config.MAX_JOBS,
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[Path]:
     """Scrape public LinkedIn job cards and save each as a JSON file.
 
@@ -161,10 +163,19 @@ def scrape_jobs(
     """
     data_dir = config.ensure_data_dir()
     saved_paths: list[Path] = []
+    is_cancelled = cancelled or (lambda: False)
 
     with sync_playwright() as p:
         # Headless Chromium with a realistic user agent.
-        browser = p.chromium.launch(headless=True)
+        try:
+            browser = p.chromium.launch(headless=True)
+        except PlaywrightError as exc:
+            message = str(exc)
+            if "Executable doesn't exist" in message or "playwright install" in message:
+                raise RuntimeError(
+                    "Playwright Chromium is not installed. Run: playwright install chromium"
+                ) from exc
+            raise
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -182,7 +193,7 @@ def scrape_jobs(
         card_infos: list[dict] = []
         start = 0
         seen_ids: set[str] = set()
-        while len(card_infos) < max_jobs:
+        while len(card_infos) < max_jobs and not is_cancelled():
             search_url = SEARCH_URL_TEMPLATE.format(
                 role=quote_plus(role),
                 location=quote_plus(location),
@@ -235,6 +246,8 @@ def scrape_jobs(
 
         # Phase 2: fetch each description from the lightweight jobPosting API.
         for index, info in enumerate(card_infos):
+            if is_cancelled():
+                break
             description = ""
             job_url = JOB_URL_TEMPLATE.format(job_id=info["job_id"])
             try:

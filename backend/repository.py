@@ -12,7 +12,7 @@ from sqlalchemy import func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from analyzer import CANDIDATE_PROFILE
-from backend.dedup import dedup_key
+from backend.dedup import dedup_key, safe_job_url
 from backend.models import (
     AnalysisResult,
     AnalysisRun,
@@ -64,7 +64,7 @@ def upsert_job(session: Session, payload: dict[str, Any]) -> tuple[Job, bool]:
     """Insert or refresh a job using deterministic URL-first deduplication."""
     title = str(payload.get("title") or "Untitled job").strip()
     company = str(payload.get("company") or "Unknown").strip()
-    url = str(payload.get("link") or payload.get("url") or "").strip() or None
+    url = safe_job_url(str(payload.get("link") or payload.get("url") or ""))
     description = str(payload.get("description") or "").strip()
     location = str(
         payload.get("location") or payload.get("location_query") or ""
@@ -486,6 +486,19 @@ def get_or_update_application(
     job.archived = status == "Archived"
     session.flush()
     return application
+
+
+def delete_application(session: Session, job: Job) -> bool:
+    """Stop tracking a job while keeping the job and its analysis history."""
+    application = job.application or session.scalar(
+        select(Application).where(Application.job_id == job.id)
+    )
+    if application is None:
+        return False
+    job.application = None
+    job.archived = False
+    session.flush()
+    return True
 
 
 def set_job_archived(

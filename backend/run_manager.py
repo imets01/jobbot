@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import threading
-import time
 import traceback
 import uuid
 import json
 import math
+import re
+import unicodedata
 from typing import Any
 
 from sqlalchemy import select
@@ -36,8 +37,85 @@ from backend.sources import DiscoveryRequest, get_source_adapter
 from scraper import scrape_jobs
 
 
+_LANGUAGE_ALIASES = {
+    "deutsch": "german",
+    "francais": "french",
+    "français": "french",
+    "italiano": "italian",
+    "espanol": "spanish",
+    "español": "spanish",
+}
+
+
+def _normalized_phrase(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.casefold()).split())
+
+
+def _canonical_language(value: Any) -> str:
+    text = _normalized_phrase(value)
+    text = re.sub(
+        r"\b(?:language|proficiency|required|preferred|fluent|fluency|native|"
+        r"basic|intermediate|advanced|business|level|a1|a2|b1|b2|c1|c2)\b",
+        " ",
+        text,
+    )
+    text = " ".join(text.split())
+    return _LANGUAGE_ALIASES.get(text, text)
+
+
+def _required_languages(values: list[Any]) -> set[str]:
+    result: set[str] = set()
+    for value in values:
+        for part in re.split(r"\s+(?:and|or)\s+|[/,;]", str(value)):
+            language = _canonical_language(part)
+            if language:
+                result.add(language)
+    return result
+
+
+def _location_matches(job_location: Any, settings: dict[str, Any]) -> bool:
+    raw_location = str(job_location or "")
+    location = _normalized_phrase(raw_location)
+    if not location:
+        return False
+    allowed_models = {
+        _normalized_phrase(value) for value in settings.get("work_models", [])
+    }
+    if "remote" in location.split() and "remote" in allowed_models:
+        return True
+    for target in settings.get("target_locations", []):
+        target_parts = [part.strip() for part in str(target).split(",") if part.strip()]
+        normalized_target = _normalized_phrase(target)
+        primary = _normalized_phrase(target_parts[0] if target_parts else target)
+        if len(target_parts) > 1 and "," in raw_location:
+            country = _normalized_phrase(target_parts[-1])
+            if country and not re.search(rf"\b{re.escape(country)}\b", location):
+                continue
+        candidates = {value for value in (normalized_target, primary) if value}
+        if any(
+            candidate == location
+            or re.search(rf"\b{re.escape(candidate)}\b", location)
+            for candidate in candidates
+        ):
+            return True
+    return False
+
+
+def _analysis_error_message(exc: Exception) -> str:
+    """Persist a useful provider category without leaking prompts or private CV data."""
+    code = getattr(exc, "code", None)
+    suffix = f" ({code})" if isinstance(code, int) else ""
+    return f"Gemini analysis failed: {type(exc).__name__}{suffix}."
+
+
 class RunConflictError(RuntimeError):
     """Raised when a second pipeline is requested while one is active."""
+
+
+class RunCancelledError(RuntimeError):
+    """Raised inside a worker after cooperative cancellation is requested."""
 
 
 class RunManager:
@@ -51,6 +129,7 @@ class RunManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._active_run_id: str | None = None
+        self._cancel_events: dict[str, threading.Event] = {}
 
     def recover_stale_runs(self) -> None:
         """Mark interrupted pending/running runs as failed after a restart."""
@@ -89,6 +168,7 @@ class RunManager:
                     payload["job_id"] = job_id
                 run = create_run(session, run_id, run_type, payload)
                 self._active_run_id = run_id
+                self._cancel_events[run_id] = threading.Event()
 
             thread = threading.Thread(
                 target=self._execute,
@@ -98,6 +178,28 @@ class RunManager:
             )
             thread.start()
             return run
+
+    def cancel(self, run_id: str) -> bool:
+        """Request cooperative cancellation of the active in-process run."""
+        with self._lock:
+            event = self._cancel_events.get(run_id)
+            if event is None or self._active_run_id != run_id:
+                return False
+            event.set()
+            return True
+
+    def _is_cancelled(self, run_id: str) -> bool:
+        event = self._cancel_events.get(run_id)
+        return bool(event and event.is_set())
+
+    def _raise_if_cancelled(self, run_id: str) -> None:
+        if self._is_cancelled(run_id):
+            raise RunCancelledError("Job search cancelled by user.")
+
+    def _wait_or_cancel(self, run_id: str, seconds: float) -> None:
+        event = self._cancel_events.get(run_id)
+        if event and event.wait(seconds):
+            raise RunCancelledError("Job search cancelled by user.")
 
     def _execute(
         self,
@@ -112,6 +214,7 @@ class RunManager:
             error_details=None,
         )
         try:
+            self._raise_if_cancelled(run_id)
             if run_type == "scraper":
                 self._scrape(run_id, parameters)
             elif run_type == "analyzer":
@@ -123,11 +226,19 @@ class RunManager:
                 )
             elif run_type in {"search", "full"}:
                 job_ids = self._scrape(run_id, parameters)
+                self._raise_if_cancelled(run_id)
                 self._analyze(run_id, job_ids=job_ids, force=False)
             else:
                 raise ValueError(f"Unsupported run type: {run_type}")
-
+            self._raise_if_cancelled(run_id)
             self._update_run(run_id, status="completed", ended_at=utc_now())
+        except RunCancelledError:
+            self._update_run(
+                run_id,
+                status="cancelled",
+                ended_at=utc_now(),
+                error_details=None,
+            )
         except Exception as exc:  # noqa: BLE001 - persist background failures
             details = f"{type(exc).__name__}: {exc}"
             self._update_run(
@@ -141,6 +252,7 @@ class RunManager:
             with self._lock:
                 if self._active_run_id == run_id:
                     self._active_run_id = None
+                self._cancel_events.pop(run_id, None)
 
     def _scrape(self, run_id: str, parameters: dict[str, Any]) -> list[int]:
         controls = parameters.get("search_controls")
@@ -177,6 +289,7 @@ class RunManager:
                             max_jobs=per_source,
                             targets=targets,
                             data_dir=config.ensure_data_dir(),
+                            cancelled=lambda: self._is_cancelled(run_id),
                         )
                     )
                     paths.extend(result.paths)
@@ -189,6 +302,7 @@ class RunManager:
                     source_errors.append(
                         f"{source_name}: {type(exc).__name__}: {exc}"
                     )
+                self._raise_if_cancelled(run_id)
         else:
             paths = scrape_jobs(
                 role=str(parameters.get("role") or config.DEFAULT_ROLE),
@@ -280,8 +394,9 @@ class RunManager:
 
         client = build_client()
         for index, payload in enumerate(payloads):
+            self._raise_if_cancelled(run_id)
             if index > 0 and config.ANALYZER_DELAY_SECONDS > 0:
-                time.sleep(config.ANALYZER_DELAY_SECONDS)
+                self._wait_or_cancel(run_id, config.ANALYZER_DELAY_SECONDS)
 
             evaluation: dict[str, Any] | None = None
             error_message: str | None = None
@@ -293,7 +408,7 @@ class RunManager:
                 )
                 evaluation["job_location"] = payload.get("location")
             except Exception as exc:  # noqa: BLE001 - persist per-job API errors
-                error_message = f"{type(exc).__name__}: {exc}"[:20_000]
+                error_message = _analysis_error_message(exc)
 
             with session_scope() as session:
                 qualifies = (
@@ -397,33 +512,17 @@ class RunManager:
 
         if settings.get("exclude_unavailable_languages"):
             available = {
-                str(item.get("language", "")).casefold()
+                _canonical_language(item.get("language", ""))
                 for item in profile.get("languages", [])
                 if isinstance(item, dict) and item.get("language")
             }
-            required = {
-                str(value).casefold()
-                for value in evaluation.get("required_languages", [])
-            }
-            for requirement in required:
-                if not any(
-                    language in requirement or requirement in language
-                    for language in available
-                ):
-                    return False
+            required = _required_languages(evaluation.get("required_languages", []))
+            if not required.issubset(available):
+                return False
 
         if settings.get("exclude_outside_locations"):
-            target_locations = [
-                str(value).casefold()
-                for value in settings.get("target_locations", [])
-            ]
-            job_location = str(evaluation.get("job_location") or "").casefold()
-            if job_location and target_locations:
-                if not any(
-                    target in job_location or job_location in target
-                    for target in target_locations
-                ):
-                    return False
+            if not _location_matches(evaluation.get("job_location"), settings):
+                return False
         return True
 
     @staticmethod

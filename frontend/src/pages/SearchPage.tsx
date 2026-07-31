@@ -98,6 +98,18 @@ export function SearchPage() {
   };
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    const markActive = () => setActiveSearch(true);
+    const refreshActive = () => {
+      void api.activeRun().then((active) => setActiveSearch(Boolean(active))).catch(() => undefined);
+    };
+    window.addEventListener("jobbot:run-progress", markActive);
+    window.addEventListener("jobbot:refresh", refreshActive);
+    return () => {
+      window.removeEventListener("jobbot:run-progress", markActive);
+      window.removeEventListener("jobbot:refresh", refreshActive);
+    };
+  }, []);
 
   const profileDirty = useMemo(
     () => Boolean(profile && savedProfile && JSON.stringify(profile) !== JSON.stringify(savedProfile)),
@@ -339,7 +351,7 @@ export function SearchPage() {
               <div className="profile-field-stack">
                 <TagInput label="Job search keywords" values={controls.keywords} onChange={(values) => updateControls("keywords", values)} placeholder="Solution Engineer, Security Engineer…" />
                 <TagInput label="Target locations" values={controls.target_locations} onChange={(values) => updateControls("target_locations", values)} placeholder="Zurich, Switzerland" />
-                <div><span className="field-label">Work model</span><div className="inline-check-grid">{WORK_MODELS.map((model) => <CheckChoice key={model} label={model} checked={controls.work_models.includes(model)} onChange={(checked) => updateControls("work_models", checked ? [...controls.work_models, model] : controls.work_models.filter((value) => value !== model))} />)}</div></div>
+                <fieldset className="choice-fieldset"><legend className="field-label">Work model</legend><div className="inline-check-grid">{WORK_MODELS.map((model) => <CheckChoice key={model} label={model} checked={controls.work_models.includes(model)} onChange={(checked) => updateControls("work_models", checked ? [...controls.work_models, model] : controls.work_models.filter((value) => value !== model))} />)}</div></fieldset>
               </div>
 
               <div className="section-divider" />
@@ -355,8 +367,7 @@ export function SearchPage() {
               </div>
 
               <div className="section-divider" />
-              <span className="field-label">Search sources</span>
-              <div className="source-choice-grid">{sources.map((source) => <CheckChoice key={source.name} label={source.name} description={source.note} disabled={!source.available} checked={controls.sources.includes(source.name)} onChange={(checked) => updateControls("sources", checked ? [...controls.sources, source.name] : controls.sources.filter((value) => value !== source.name))} />)}</div>
+              <fieldset className="choice-fieldset"><legend className="field-label">Search sources</legend><div className="source-choice-grid">{sources.map((source) => <CheckChoice key={source.name} label={source.name} description={source.note} disabled={!source.available} checked={controls.sources.includes(source.name)} onChange={(checked) => updateControls("sources", checked ? [...controls.sources, source.name] : controls.sources.filter((value) => value !== source.name))} />)}</div></fieldset>
               {(controls.sources.includes("Greenhouse") || controls.sources.includes("Lever")) && (
                 <div className="source-target-config">
                   <div><p className="eyebrow">Target companies</p><h3>Company job boards</h3><p>Greenhouse and Lever expose public company feeds rather than a global search. Add each company board URL or site name to scan.</p></div>

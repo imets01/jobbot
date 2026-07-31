@@ -18,14 +18,32 @@ def normalize_text(value: str | None) -> str:
     return " ".join(text.casefold().split())
 
 
-def normalize_job_url(url: str | None) -> str | None:
-    """Return a stable URL, canonicalizing LinkedIn locale and tracking URLs."""
+def safe_job_url(url: str | None) -> str | None:
+    """Return a browser-safe HTTP(S) URL while preserving meaningful queries."""
     if not url or not url.strip():
         return None
-
     raw = url.strip()
+    if any(ord(character) < 32 for character in raw):
+        return None
     if "://" not in raw:
         raw = f"https://{raw}"
+    try:
+        parsed = urlsplit(raw)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return None
+    if not parsed.hostname or parsed.username or parsed.password:
+        return None
+    return raw
+
+
+def normalize_job_url(url: str | None) -> str | None:
+    """Return a stable URL, canonicalizing LinkedIn locale and tracking URLs."""
+    raw = safe_job_url(url)
+    if raw is None:
+        return None
 
     parsed = urlsplit(raw)
     host = (parsed.hostname or "").casefold()

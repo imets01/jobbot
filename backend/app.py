@@ -8,14 +8,16 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy.orm import Session
 
 import config
 from backend.database import get_db, init_database, session_scope
+from backend.dedup import safe_job_url
 from backend.cover_letter_service import generate_cover_letter
 from backend.cv_service import (
     delete_stored_cv,
@@ -37,6 +39,7 @@ from backend.profile_service import json_dict, json_list
 from backend.repository import (
     create_cover_letter,
     dashboard_data,
+    delete_application,
     get_cv_document,
     get_job_analyses,
     get_job_row,
@@ -120,11 +123,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1", "testserver"],
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Accept", "Content-Type"],
 )
 
 
@@ -202,7 +209,7 @@ def job_item(
         id=job.id,
         title=job.title,
         company=job.company,
-        url=job.url,
+        url=safe_job_url(job.url),
         location=job.location,
         source=job.source,
         first_seen=job.first_seen,
@@ -372,6 +379,17 @@ def save_application(
     return ApplicationOut.model_validate(application)
 
 
+@app.delete("/api/jobs/{job_id}/application", status_code=204)
+def remove_application(job_id: int, session: DbSession) -> Response:
+    job = session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not delete_application(session, job):
+        raise HTTPException(status_code=404, detail="Application is not tracked")
+    session.commit()
+    return Response(status_code=204)
+
+
 @app.post("/api/jobs/{job_id}/reanalyze", response_model=RunOut, status_code=202)
 def reanalyze_job(job_id: int, session: DbSession) -> RunOut:
     if session.get(Job, job_id) is None:
@@ -432,7 +450,7 @@ def generate_job_cover_letter(job_id: int, session: DbSession) -> CoverLetterOut
     except Exception as exc:  # surface provider failures without losing state
         raise HTTPException(
             status_code=502,
-            detail=f"Cover letter generation failed: {exc}",
+            detail="Cover letter generation is temporarily unavailable. Try again shortly.",
         ) from exc
     letter = create_cover_letter(
         session,
@@ -512,7 +530,7 @@ async def upload_candidate_cv(
     except Exception as exc:  # malformed PDF/DOCX
         raise HTTPException(
             status_code=422,
-            detail=f"The CV could not be read: {exc}",
+            detail="The CV could not be read. Verify that it is a valid PDF or DOCX file.",
         ) from exc
 
     previous = get_cv_document(session)
@@ -547,6 +565,11 @@ def extract_candidate_profile_from_cv(session: DbSession) -> CVExtractionOut:
         extracted = extract_structured_profile(document.raw_text)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="CV profile extraction is temporarily unavailable. Try again shortly.",
+        ) from exc
 
     current = get_structured_profile(session)
     merged = dict(current)
@@ -642,7 +665,7 @@ def runs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     run_type: Literal["search", "scraper", "analyzer", "full"] | None = None,
-    run_status: Literal["pending", "running", "completed", "failed"] | None = Query(
+    run_status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = Query(
         None, alias="status"
     ),
     date_from: date | None = None,
@@ -671,6 +694,21 @@ def run_status(run_id: str, session: DbSession) -> RunOut:
     run = session.get(AnalysisRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    return run_out(run)
+
+
+@app.post("/api/runs/{run_id}/cancel", response_model=RunOut, status_code=202)
+def cancel_run(run_id: str, session: DbSession) -> RunOut:
+    run = session.get(AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="This search has already finished.")
+    if not run_manager.cancel(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail="This search is no longer managed by the current process.",
+        )
     return run_out(run)
 
 

@@ -116,6 +116,7 @@ class AnalysisResult(Base):
 
 
 Index("ix_analysis_results_job_created", AnalysisResult.job_id, AnalysisResult.created_at)
+Index("ix_analysis_results_run_created", AnalysisResult.run_id, AnalysisResult.created_at)
 
 
 class Application(Base):
