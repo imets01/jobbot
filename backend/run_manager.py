@@ -32,6 +32,7 @@ from backend.profile_service import (
     build_profile_snapshot,
     profile_for_search,
 )
+from backend.sources import DiscoveryRequest, get_source_adapter
 from scraper import scrape_jobs
 
 
@@ -144,31 +145,50 @@ class RunManager:
     def _scrape(self, run_id: str, parameters: dict[str, Any]) -> list[int]:
         controls = parameters.get("search_controls")
         paths = []
+        source_errors: list[str] = []
+        successful_sources = 0
         if controls:
-            sources = {str(value).casefold() for value in controls.get("sources", [])}
-            if "linkedin" not in sources:
-                raise ValueError(
-                    "LinkedIn is the only search source currently connected. "
-                    "Select LinkedIn or add a source adapter."
-                )
+            sources = [str(value) for value in controls.get("sources", [])]
             keywords = [str(value) for value in controls.get("keywords", [])]
             locations = [str(value) for value in controls.get("target_locations", [])]
-            if not keywords or not locations:
-                raise ValueError("At least one keyword and target location are required.")
-            role_query = " OR ".join(keywords)
+            work_models = [str(value) for value in controls.get("work_models", [])]
+            if not sources or not keywords or not locations:
+                raise ValueError(
+                    "At least one source, keyword, and target location are required."
+                )
             discovery_budget = min(
                 100,
                 max(25, int(controls.get("number_of_jobs", config.MAX_JOBS)) * 3),
             )
-            per_location = max(1, math.ceil(discovery_budget / len(locations)))
-            for location in locations:
-                paths.extend(
-                    scrape_jobs(
-                        role=role_query,
-                        location=location,
-                        max_jobs=per_location,
+            per_source = max(1, math.ceil(discovery_budget / len(sources)))
+            for source_name in sources:
+                try:
+                    adapter = get_source_adapter(source_name)
+                    targets = (
+                        [str(value) for value in controls.get(adapter.target_field, [])]
+                        if adapter.target_field
+                        else []
                     )
-                )
+                    result = adapter.discover(
+                        DiscoveryRequest(
+                            keywords=keywords,
+                            locations=locations,
+                            work_models=work_models,
+                            max_jobs=per_source,
+                            targets=targets,
+                            data_dir=config.ensure_data_dir(),
+                        )
+                    )
+                    paths.extend(result.paths)
+                    source_errors.extend(
+                        f"{adapter.name}: {message}" for message in result.errors
+                    )
+                    if result.completed_targets > 0 or not result.errors:
+                        successful_sources += 1
+                except Exception as exc:
+                    source_errors.append(
+                        f"{source_name}: {type(exc).__name__}: {exc}"
+                    )
         else:
             paths = scrape_jobs(
                 role=str(parameters.get("role") or config.DEFAULT_ROLE),
@@ -181,8 +201,15 @@ class RunManager:
             if run is None:
                 raise RuntimeError(f"Run {run_id} disappeared")
             run.jobs_discovered = len(stats.job_ids)
-            run.failures += stats.files_failed
-            return list(stats.job_ids)
+            run.failures += stats.files_failed + len(source_errors)
+            if source_errors:
+                run.error_details = "Source warnings:\n" + "\n".join(source_errors)
+            job_ids = list(stats.job_ids)
+
+        if controls and successful_sources == 0:
+            details = "; ".join(source_errors) or "No source completed discovery."
+            raise RuntimeError(f"All selected search sources failed: {details}")
+        return job_ids
 
     def _analyze(
         self,

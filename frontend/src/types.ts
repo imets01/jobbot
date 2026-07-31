@@ -178,6 +178,8 @@ export interface SearchControls {
   exclude_unavailable_languages: boolean;
   exclude_outside_locations: boolean;
   sources: string[];
+  greenhouse_boards: string[];
+  lever_sites: string[];
   updated_at?: string;
 }
 

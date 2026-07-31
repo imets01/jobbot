@@ -34,7 +34,9 @@ def test_search_controls_persist(session):
             "keywords": ["Security Engineer", "DevOps Engineer"],
             "minimum_match_score": 75,
             "number_of_jobs": 12,
-            "sources": ["LinkedIn"],
+            "sources": ["LinkedIn", "Greenhouse", "Lever"],
+            "greenhouse_boards": ["Example AG | example"],
+            "lever_sites": ["Example AG | example"],
         }
     )
     updated = update_search_settings(session, values)
@@ -44,6 +46,8 @@ def test_search_controls_persist(session):
     assert persisted["keywords"] == ["Security Engineer", "DevOps Engineer"]
     assert persisted["minimum_match_score"] == 75
     assert persisted["number_of_jobs"] == 12
+    assert persisted["greenhouse_boards"] == ["Example AG | example"]
+    assert persisted["lever_sites"] == ["Example AG | example"]
 
 
 def test_search_is_the_single_public_pipeline_endpoint():

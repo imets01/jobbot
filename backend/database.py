@@ -66,6 +66,10 @@ def _apply_sqlite_bootstrap_migrations(bind: Engine) -> None:
         "analysis_runs": {
             "hidden": "BOOLEAN NOT NULL DEFAULT 0",
         },
+        "search_settings": {
+            "greenhouse_boards_json": "TEXT NOT NULL DEFAULT '[]'",
+            "lever_sites_json": "TEXT NOT NULL DEFAULT '[]'",
+        },
         "candidate_profiles": {
             "structured_json": "TEXT NOT NULL DEFAULT '{}'",
         },

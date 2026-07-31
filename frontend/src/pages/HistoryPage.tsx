@@ -250,6 +250,8 @@ export function HistoryPage() {
                           <div><dt>Threshold</dt><dd>{controls.minimum_match_score}/100</dd></div>
                           <div><dt>Requested</dt><dd>Top {controls.number_of_jobs}</dd></div>
                           <div><dt>Experience limit</dt><dd>{controls.max_required_experience_years === null ? "None" : `${controls.max_required_experience_years} years`}</dd></div>
+                          <div><dt>Sources</dt><dd>{controls.sources.join(", ")}</dd></div>
+                          <div><dt>Company boards</dt><dd>{controls.greenhouse_boards.length + controls.lever_sites.length || "None"}</dd></div>
                         </dl>
                       )}
                       <RunResults runId={run.id} onSelectJob={setSelectedJob} refreshToken={resultsRefresh} />

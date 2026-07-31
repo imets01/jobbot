@@ -7,19 +7,20 @@ structured candidate profile, private CV evidence, persisted search controls,
 ## Architecture
 
 ```text
-LinkedIn guest endpoints
-        |
-        v
-scraper.py --> data/job_*.json --> idempotent importer --> SQLite
-                                                        |
-React dashboard <--> FastAPI <--> run manager ----------+
-                              |
-                              +--> analyzer.py --> Gemini scoring
-                              +--> CV extraction + cover letters
+LinkedIn guest search ----+
+Greenhouse company boards +--> source adapters --> data/job_*.json
+Lever company boards -----+                             |
+               v
+React dashboard <--> FastAPI <--> run manager --> idempotent importer --> SQLite
+            |
+            +--> analyzer.py --> Gemini scoring
+            +--> CV extraction + cover letters
 ```
 
 - **Existing pipeline**
   - `scraper.py` remains the only LinkedIn scraping implementation.
+  - Greenhouse and Lever use their public company job-board APIs through
+    adapters under `backend/sources/`.
   - `analyzer.py` remains the only Gemini evaluation implementation.
   - `main.py` remains available as the command-line pipeline.
 - **Backend** (`backend/`)
@@ -27,7 +28,7 @@ React dashboard <--> FastAPI <--> run manager ----------+
     runs, history, applications, and cover letters.
   - SQLite persistence in `jobbot.db` (ignored by Git).
   - Idempotent startup import of all `data/job_*.json` files.
-  - URL-first job deduplication with deterministic content-hash fallback.
+  - URL-first job deduplication with exact-content cross-source fallback.
   - A guarded background run manager prevents concurrent duplicate runs.
 - **Frontend** (`frontend/`)
   - React, Vite, and TypeScript.
@@ -88,7 +89,7 @@ build/dependency folders are ignored by Git.
 5. Set keywords, locations, work models, threshold, top-result
   count, seniority/language/location exclusions, and source adapters.
   Search keywords are the single source for target roles and are used for both
-  LinkedIn discovery and Gemini career-alignment scoring.
+  source discovery and Gemini career-alignment scoring.
 6. Select **Start Job Search** directly from the search controls. There is no
   separate review step and there are no separate discovery, analyzer, or
   full-pipeline actions in the web UI. Every search discovers normalized jobs,
@@ -117,10 +118,24 @@ After launch, the app opens the secondary **Results Dashboard** to show search
 progress, top matches, and application metrics. Search configuration remains the
 main home-page experience.
 
-The existing scraper currently connects **LinkedIn only**. Other requested
-sources appear in the capability registry as unavailable extension points; the
-UI does not pretend those adapters work. Add future adapters behind the same
-normalized job-import contract.
+### Search sources
+
+- **LinkedIn** performs broad keyword and location discovery through public
+  guest endpoints.
+- **Greenhouse** and **Lever** scan public feeds for selected companies. These
+  ATS platforms do not offer a global search API, so select the source and add
+  one or more company board targets under **Company job boards**.
+- A target can be a board token/site name, a full board URL, or
+  `Company name | token-or-URL`. Supplying the company name gives cleaner job
+  cards when the ATS response does not identify its owner.
+
+Examples are `Acme | acme`, `https://boards.greenhouse.io/acme`, and
+`https://jobs.lever.co/acme`. Each adapter filters the company feed using the
+saved role and location controls. One failing company board is recorded as a
+source warning while the other selected sources continue.
+
+Workday, generic career pages, manual URLs, and broad third-party job-board APIs
+remain explicit future adapters; the UI does not claim they are connected.
 
 ### Match score interpretation
 
@@ -190,6 +205,8 @@ On backend startup, SQLAlchemy creates any missing tables and imports existing
 raw JSON files. Importing repeatedly is safe:
 
 - LinkedIn locale/tracking URLs are normalized to one canonical job URL.
+- Identical title, company, location, and description content is merged even
+  when LinkedIn and an employer ATS provide different URLs.
 - Existing jobs update `last_seen` instead of creating duplicates.
 - URL-less jobs use a deterministic hash of title, company, location, and
   description.
@@ -240,6 +257,8 @@ analysis history, and application workflow updates.
 - The scraper uses public LinkedIn guest endpoints without authentication.
   LinkedIn can change or throttle these endpoints, so use the tool responsibly
   and review applicable terms.
+- Greenhouse and Lever adapters use public company-board APIs without
+  authentication. Configure only boards that are intended for public access.
 - Gemini requests are paced according to `ANALYZER_DELAY_SECONDS` in `config.py`.
 - Schema upgrades are additive SQLite bootstrap migrations because this local
   project does not yet use Alembic.

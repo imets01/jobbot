@@ -1,26 +1,15 @@
-"""Search-source capability registry.
-
-Only LinkedIn is connected to the existing scraper today. The registry gives the
-UI a stable extension point without pretending that unsupported sources work.
-Future adapters can implement the same normalized job-import contract.
-"""
+"""Search-source capabilities exposed to the web client."""
 
 from __future__ import annotations
 
+from backend.sources import connected_source_capabilities
 
-SOURCE_CAPABILITIES = [
-    {
-        "name": "LinkedIn",
-        "available": True,
-        "note": "Connected to public LinkedIn job listings.",
-    },
+SOURCE_CAPABILITIES = connected_source_capabilities() + [
     {
         "name": "Company career pages",
         "available": False,
-        "note": "Adapter not configured yet.",
+        "note": "Generic career-page adapter not configured yet.",
     },
-    {"name": "Greenhouse", "available": False, "note": "Adapter not configured yet."},
-    {"name": "Lever", "available": False, "note": "Adapter not configured yet."},
     {"name": "Workday", "available": False, "note": "Adapter not configured yet."},
     {
         "name": "Manual job URL",

@@ -2374,6 +2374,27 @@ tbody tr:hover {
   margin-top: 16px;
 }
 
+.source-target-config {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--cp-border);
+  border-radius: 0.625rem;
+  background: var(--cp-bg-elevated);
+}
+
+.source-target-config > div:first-child p:last-child {
+  margin: 4px 0 0;
+  color: var(--cp-text-muted);
+  font-size: 0.74rem;
+}
+
+.source-target-config .field-help {
+  display: block;
+  margin-top: 5px;
+}
+
 .wizard-summary-list {
   display: grid;
   gap: 0;

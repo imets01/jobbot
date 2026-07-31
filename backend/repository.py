@@ -76,6 +76,14 @@ def upsert_job(session: Session, payload: dict[str, Any]) -> tuple[Job, bool]:
     seen_at = _parse_timestamp(payload.get("scraped_at"))
 
     job = session.scalar(select(Job).where(Job.dedup_key == key))
+    matched_by_content = False
+    if job is None and normalized_url:
+        job = session.scalar(
+            select(Job)
+            .where(Job.content_hash == hash_value)
+            .order_by(Job.id.asc())
+        )
+        matched_by_content = job is not None
     created = job is None
     if job is None:
         job = Job(
@@ -98,12 +106,14 @@ def upsert_job(session: Session, payload: dict[str, Any]) -> tuple[Job, bool]:
     # Refresh mutable content while preserving first_seen and history.
     job.title = title or job.title
     job.company = company or job.company
-    job.url = url or job.url
-    job.normalized_url = normalized_url or job.normalized_url
+    if not matched_by_content or not job.url:
+        job.url = url or job.url
+        job.normalized_url = normalized_url or job.normalized_url
     if description:
         job.description = description
     job.location = location or job.location
-    job.source = source or job.source
+    if not matched_by_content or not job.source:
+        job.source = source or job.source
     job.content_hash = hash_value
     if job.last_seen is None:
         job.last_seen = seen_at
@@ -275,6 +285,8 @@ def get_or_create_search_settings(session: Session) -> SearchSettings:
             ],
             exclude_outside_locations=defaults["exclude_outside_locations"],
             sources_json=json.dumps(defaults["sources"]),
+            greenhouse_boards_json=json.dumps(defaults["greenhouse_boards"]),
+            lever_sites_json=json.dumps(defaults["lever_sites"]),
         )
         session.add(settings)
         session.flush()
@@ -293,6 +305,8 @@ def search_settings_dict(settings: SearchSettings) -> dict[str, Any]:
         "exclude_unavailable_languages": settings.exclude_unavailable_languages,
         "exclude_outside_locations": settings.exclude_outside_locations,
         "sources": json_list(settings.sources_json),
+        "greenhouse_boards": json_list(settings.greenhouse_boards_json),
+        "lever_sites": json_list(settings.lever_sites_json),
     }
 
 
@@ -316,6 +330,12 @@ def update_search_settings(
     )
     settings.exclude_outside_locations = bool(values["exclude_outside_locations"])
     settings.sources_json = json.dumps(values["sources"], ensure_ascii=False)
+    settings.greenhouse_boards_json = json.dumps(
+        values.get("greenhouse_boards", []), ensure_ascii=False
+    )
+    settings.lever_sites_json = json.dumps(
+        values.get("lever_sites", []), ensure_ascii=False
+    )
     settings.updated_at = utc_now()
     session.flush()
     return settings

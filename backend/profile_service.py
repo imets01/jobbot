@@ -73,6 +73,8 @@ DEFAULT_SEARCH_SETTINGS: dict[str, Any] = {
     "exclude_unavailable_languages": False,
     "exclude_outside_locations": True,
     "sources": ["LinkedIn"],
+    "greenhouse_boards": [],
+    "lever_sites": [],
 }
 
 

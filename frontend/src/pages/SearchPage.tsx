@@ -236,7 +236,16 @@ export function SearchPage() {
   };
 
   const candidateReady = candidateProfileReady(profile);
-  const searchReady = Boolean(controls.keywords.length && controls.target_locations.length && controls.sources.length);
+  const sourceTargetsReady = (
+    (!controls.sources.includes("Greenhouse") || controls.greenhouse_boards.length > 0)
+    && (!controls.sources.includes("Lever") || controls.lever_sites.length > 0)
+  );
+  const searchReady = Boolean(
+    controls.keywords.length
+    && controls.target_locations.length
+    && controls.sources.length
+    && sourceTargetsReady,
+  );
 
   return (
     <>
@@ -348,6 +357,23 @@ export function SearchPage() {
               <div className="section-divider" />
               <span className="field-label">Search sources</span>
               <div className="source-choice-grid">{sources.map((source) => <CheckChoice key={source.name} label={source.name} description={source.note} disabled={!source.available} checked={controls.sources.includes(source.name)} onChange={(checked) => updateControls("sources", checked ? [...controls.sources, source.name] : controls.sources.filter((value) => value !== source.name))} />)}</div>
+              {(controls.sources.includes("Greenhouse") || controls.sources.includes("Lever")) && (
+                <div className="source-target-config">
+                  <div><p className="eyebrow">Target companies</p><h3>Company job boards</h3><p>Greenhouse and Lever expose public company feeds rather than a global search. Add each company board URL or site name to scan.</p></div>
+                  {controls.sources.includes("Greenhouse") && (
+                    <div>
+                      <TagInput label="Greenhouse boards" values={controls.greenhouse_boards} onChange={(values) => updateControls("greenhouse_boards", values)} placeholder="Company | board token or URL" />
+                      <small className="field-help">Example: Acme | acme, or https://boards.greenhouse.io/acme</small>
+                    </div>
+                  )}
+                  {controls.sources.includes("Lever") && (
+                    <div>
+                      <TagInput label="Lever sites" values={controls.lever_sites} onChange={(values) => updateControls("lever_sites", values)} placeholder="Company | site name or URL" />
+                      <small className="field-help">Example: Acme | acme, or https://jobs.lever.co/acme</small>
+                    </div>
+                  )}
+                </div>
+              )}
             </article>
           </div>
 
@@ -378,7 +404,10 @@ export function SearchPage() {
                 <div><dt>Locations</dt><dd>{controls.target_locations.length || "—"}</dd></div>
                 <div><dt>Threshold</dt><dd>{controls.minimum_match_score}/100</dd></div>
                 <div><dt>Results</dt><dd>Top {controls.number_of_jobs}</dd></div>
+                <div><dt>Sources</dt><dd>{controls.sources.length || "—"}</dd></div>
+                <div><dt>Company boards</dt><dd>{controls.greenhouse_boards.length + controls.lever_sites.length || "—"}</dd></div>
               </dl>
+              {!sourceTargetsReady && <p className="inline-note">Add at least one company board for each selected ATS source.</p>}
             </article>
           </aside>
         </section>

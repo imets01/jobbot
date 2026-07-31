@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _clean_string_list(values: list[str]) -> list[str]:
@@ -119,11 +119,29 @@ class SearchControls(BaseModel):
     exclude_unavailable_languages: bool = False
     exclude_outside_locations: bool = True
     sources: list[str] = Field(min_length=1, max_length=20)
+    greenhouse_boards: list[str] = Field(default_factory=list, max_length=100)
+    lever_sites: list[str] = Field(default_factory=list, max_length=100)
 
-    @field_validator("keywords", "target_locations", "work_models", "sources")
+    @field_validator(
+        "keywords",
+        "target_locations",
+        "work_models",
+        "sources",
+        "greenhouse_boards",
+        "lever_sites",
+    )
     @classmethod
     def clean_lists(cls, value: list[str]) -> list[str]:
         return _clean_string_list(value)
+
+    @model_validator(mode="after")
+    def require_selected_source_targets(self) -> "SearchControls":
+        selected = {source.casefold() for source in self.sources}
+        if "greenhouse" in selected and not self.greenhouse_boards:
+            raise ValueError("Add at least one Greenhouse company board.")
+        if "lever" in selected and not self.lever_sites:
+            raise ValueError("Add at least one Lever company site.")
+        return self
 
 
 class AnalysisResultOut(BaseModel):

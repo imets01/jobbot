@@ -178,6 +178,8 @@ class SearchSettings(Base):
     exclude_unavailable_languages: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     exclude_outside_locations: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sources_json: Mapped[str] = mapped_column(Text, nullable=False, default='["LinkedIn"]')
+    greenhouse_boards_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    lever_sites_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
